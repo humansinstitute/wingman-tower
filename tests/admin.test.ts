@@ -40,6 +40,7 @@ describe('Admin table viewer', () => {
 
     const html = await res.text();
     expect(html).toContain('Table Viewer');
+    expect(html).toContain('Connection Tokens');
     expect(html).toContain('/api/v4/admin/tables');
     expect(html).toContain('Connect with Nostr');
   });

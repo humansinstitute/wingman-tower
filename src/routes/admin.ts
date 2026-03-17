@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { requireNip98Auth } from '../auth';
+import { buildAdminAgentConnectPackage, buildSuperBasedConnectionToken } from '../admin-token';
 import { config } from '../config';
 import { getDb } from '../db';
 
@@ -132,5 +133,118 @@ adminRouter.get('/tables/:table', async (c) => {
     offset,
     columns,
     rows,
+  });
+});
+
+adminRouter.get('/workspaces', async (c) => {
+  const authNpub = await requireNip98Auth(c);
+  if (authNpub instanceof Response) return authNpub;
+  const adminError = requireAdminNpub(authNpub);
+  if (adminError) return adminError;
+
+  const sql = getDb();
+  const workspaces = await sql<{
+    workspace_id: string;
+    workspace_owner_npub: string;
+    creator_npub: string;
+    name: string;
+    description: string;
+    default_group_id: string | null;
+    default_group_npub: string | null;
+    created_at: string;
+    updated_at: string;
+  }[]>`
+    SELECT
+      w.id AS workspace_id,
+      w.workspace_owner_npub,
+      w.creator_npub,
+      w.name,
+      w.description,
+      w.default_group_id,
+      g.group_npub AS default_group_npub,
+      w.created_at,
+      w.updated_at
+    FROM v4_workspaces w
+    LEFT JOIN v4_groups g
+      ON g.id = w.default_group_id
+    ORDER BY w.updated_at DESC, w.created_at DESC
+  `;
+
+  return c.json({
+    viewer: authNpub,
+    workspaces,
+  });
+});
+
+adminRouter.get('/workspaces/:workspaceId/connection-token', async (c) => {
+  const authNpub = await requireNip98Auth(c);
+  if (authNpub instanceof Response) return authNpub;
+  const adminError = requireAdminNpub(authNpub);
+  if (adminError) return adminError;
+
+  const workspaceId = String(c.req.param('workspaceId') || '').trim();
+  const appNpub = String(c.req.query('app_npub') || '').trim();
+  if (!workspaceId) return c.json({ error: 'workspaceId required' }, 400);
+  if (!appNpub) return c.json({ error: 'app_npub query param required' }, 400);
+
+  const sql = getDb();
+  const [workspace] = await sql<{
+    workspace_id: string;
+    workspace_owner_npub: string;
+    creator_npub: string;
+    name: string;
+    description: string;
+    default_group_id: string | null;
+    default_group_npub: string | null;
+    created_at: string;
+    updated_at: string;
+  }[]>`
+    SELECT
+      w.id AS workspace_id,
+      w.workspace_owner_npub,
+      w.creator_npub,
+      w.name,
+      w.description,
+      w.default_group_id,
+      g.group_npub AS default_group_npub,
+      w.created_at,
+      w.updated_at
+    FROM v4_workspaces w
+    LEFT JOIN v4_groups g
+      ON g.id = w.default_group_id
+    WHERE w.id = ${workspaceId}
+    LIMIT 1
+  `;
+
+  if (!workspace) return c.json({ error: 'workspace not found' }, 404);
+
+  const relayUrls = c.req.query('relay')
+    ? [String(c.req.query('relay')).trim()].filter(Boolean)
+    : [];
+
+  const connectionToken = buildSuperBasedConnectionToken({
+    directHttpsUrl: config.directHttpsUrl,
+    serviceNpub: config.service.npub || null,
+    workspaceOwnerNpub: workspace.workspace_owner_npub,
+    appNpub,
+    relayUrls,
+  });
+
+  const agentConnectPackage = buildAdminAgentConnectPackage({
+    directHttpsUrl: config.directHttpsUrl,
+    serviceNpub: config.service.npub || null,
+    workspaceOwnerNpub: workspace.workspace_owner_npub,
+    appNpub,
+    relayUrls,
+  });
+
+  return c.json({
+    viewer: authNpub,
+    workspace,
+    app_npub: appNpub,
+    direct_https_url: config.directHttpsUrl,
+    service_npub: config.service.npub || null,
+    connection_token: connectionToken,
+    agent_connect_package: agentConnectPackage,
   });
 });

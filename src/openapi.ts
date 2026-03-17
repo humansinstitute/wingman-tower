@@ -59,6 +59,7 @@ function tableViewerHtml(apiBaseUrl: string) {
       .viewer { display: grid; grid-template-columns: 320px minmax(0, 1fr); min-height: 100vh; }
       .sidebar { border-right: 1px solid var(--line); padding: 1rem; background: rgba(255,255,255,0.6); }
       .content { padding: 1rem 1.25rem 2rem; }
+      .stack { display: flex; flex-direction: column; gap: 1rem; }
       h1 { margin: 0 0 0.35rem; font-size: 1.2rem; }
       .lede, .meta, .empty, .status { color: var(--muted); font-size: 0.9rem; }
       .status { margin: 0.75rem 0 1rem; min-height: 1.25rem; }
@@ -72,6 +73,25 @@ function tableViewerHtml(apiBaseUrl: string) {
       }
       .connect { border-radius: 999px; cursor: pointer; }
       .table-list { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 1rem; }
+      .panel {
+        border: 1px solid var(--line);
+        background: var(--panel);
+        border-radius: 14px;
+        padding: 0.85rem;
+      }
+      .panel h2 { margin: 0 0 0.5rem; font-size: 0.98rem; }
+      .field { display: flex; flex-direction: column; gap: 0.35rem; margin-top: 0.6rem; }
+      .field input, .field select, .field textarea {
+        width: 100%;
+        border: 1px solid var(--line);
+        background: #fff;
+        color: var(--text);
+        border-radius: 10px;
+        padding: 0.55rem 0.65rem;
+        font: inherit;
+      }
+      .field textarea { min-height: 6rem; font-family: var(--mono); font-size: 0.75rem; }
+      .actions { display: flex; gap: 0.5rem; margin-top: 0.7rem; flex-wrap: wrap; }
       .table-row {
         width: 100%;
         text-align: left;
@@ -104,7 +124,31 @@ function tableViewerHtml(apiBaseUrl: string) {
         <p class="lede">Read-only spot checks over live SuperBased v4 backend tables.</p>
         <button id="connect" class="connect" type="button">Connect with Nostr</button>
         <div id="status" class="status">Not connected</div>
-        <div id="tableList" class="table-list"></div>
+        <div class="stack">
+          <div class="panel">
+            <h2>Connection Tokens</h2>
+            <div class="meta">Generate a Yoke/Agent Connect token for a workspace and app namespace.</div>
+            <div class="field">
+              <label for="workspaceSelect" class="meta">Workspace</label>
+              <select id="workspaceSelect">
+                <option value="">Load after connect</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="appNpubInput" class="meta">App npub</label>
+              <input id="appNpubInput" type="text" placeholder="npub1..." />
+            </div>
+            <div class="actions">
+              <button id="generateTokenBtn" class="connect" type="button">Generate Token</button>
+              <button id="copyTokenBtn" class="pager-btn" type="button">Copy Token</button>
+            </div>
+            <div class="field">
+              <label for="tokenOutput" class="meta">Connection token</label>
+              <textarea id="tokenOutput" readonly placeholder="Generated token will appear here"></textarea>
+            </div>
+          </div>
+          <div id="tableList" class="table-list"></div>
+        </div>
       </aside>
       <main class="content">
         <div class="toolbar">
@@ -140,6 +184,11 @@ function tableViewerHtml(apiBaseUrl: string) {
       const prevBtn = document.getElementById('prevBtn');
       const nextBtn = document.getElementById('nextBtn');
       const limitSelect = document.getElementById('limitSelect');
+      const workspaceSelect = document.getElementById('workspaceSelect');
+      const appNpubInput = document.getElementById('appNpubInput');
+      const generateTokenBtn = document.getElementById('generateTokenBtn');
+      const copyTokenBtn = document.getElementById('copyTokenBtn');
+      const tokenOutput = document.getElementById('tokenOutput');
 
       function setStatus(message, isError = false) {
         statusEl.textContent = message;
@@ -204,6 +253,20 @@ function tableViewerHtml(apiBaseUrl: string) {
         return res.json();
       }
 
+      function renderWorkspaceList(workspaces) {
+        workspaceSelect.innerHTML = '';
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = workspaces.length ? 'Select a workspace' : 'No workspaces found';
+        workspaceSelect.appendChild(placeholder);
+        for (const workspace of workspaces) {
+          const option = document.createElement('option');
+          option.value = workspace.workspace_id;
+          option.textContent = workspace.name + ' | ' + workspace.workspace_owner_npub;
+          workspaceSelect.appendChild(option);
+        }
+      }
+
       function renderTableList() {
         tableListEl.innerHTML = '';
         for (const table of state.tables) {
@@ -248,10 +311,24 @@ function tableViewerHtml(apiBaseUrl: string) {
         setStatus('Loading table list…');
         const payload = await apiGet('/api/v4/admin/tables');
         state.tables = payload.tables || [];
+        const workspacePayload = await apiGet('/api/v4/admin/workspaces');
+        state.workspaces = workspacePayload.workspaces || [];
+        renderWorkspaceList(state.workspaces);
         if (!state.activeTable && state.tables.length > 0) state.activeTable = state.tables[0].table;
         renderTableList();
         setStatus('Connected as ' + (state.npub || payload.viewer));
         if (state.activeTable) await loadTable();
+      }
+
+      async function generateToken() {
+        const workspaceId = workspaceSelect.value;
+        const appNpub = String(appNpubInput.value || '').trim();
+        if (!workspaceId) throw new Error('Select a workspace first');
+        if (!appNpub) throw new Error('Enter an app npub first');
+        setStatus('Generating connection token…');
+        const payload = await apiGet('/api/v4/admin/workspaces/' + encodeURIComponent(workspaceId) + '/connection-token?app_npub=' + encodeURIComponent(appNpub));
+        tokenOutput.value = payload.connection_token || '';
+        setStatus('Connected as ' + (state.npub || payload.viewer));
       }
 
       async function loadTable() {
@@ -263,6 +340,16 @@ function tableViewerHtml(apiBaseUrl: string) {
       }
 
       connectBtn.addEventListener('click', () => loadTables().catch((error) => setStatus(error.message || 'Failed to connect', true)));
+      generateTokenBtn.addEventListener('click', () => generateToken().catch((error) => setStatus(error.message || 'Failed to generate token', true)));
+      copyTokenBtn.addEventListener('click', async () => {
+        if (!tokenOutput.value) return;
+        try {
+          await navigator.clipboard.writeText(tokenOutput.value);
+          setStatus('Connection token copied');
+        } catch (error) {
+          setStatus((error && error.message) || 'Failed to copy token', true);
+        }
+      });
       limitSelect.addEventListener('change', () => {
         state.limit = Number.parseInt(limitSelect.value, 10) || 100;
         state.offset = 0;
