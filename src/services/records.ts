@@ -1,0 +1,360 @@
+import { getDb } from '../db';
+import type {
+  FetchRecordsInput,
+  GroupPayloadInput,
+  SyncRecordInput,
+  SyncResult,
+  V4Record,
+  V4RecordGroupPayload,
+  RecordResponse,
+} from '../types';
+
+async function resolveWriteGroup(sql: ReturnType<typeof getDb>, rec: SyncRecordInput) {
+  const writeGroupId = String(rec.write_group_id || '').trim();
+  if (writeGroupId) {
+    const [row] = await sql<{ group_id: string; group_npub: string; epoch: number }[]>`
+      SELECT g.id AS group_id, ge.group_npub, ge.epoch
+      FROM v4_groups g
+      JOIN v4_group_epochs ge
+        ON ge.group_id = g.id
+      WHERE g.id = ${writeGroupId}
+      ORDER BY ge.epoch DESC
+      LIMIT 1
+    `;
+    return row ?? null;
+  }
+
+  const writeGroupNpub = String(rec.write_group_npub || '').trim();
+  if (!writeGroupNpub) return null;
+
+  const [row] = await sql<{ group_id: string; group_npub: string; epoch: number }[]>`
+    SELECT g.id AS group_id, ge.group_npub, ge.epoch
+    FROM v4_groups g
+    JOIN v4_group_epochs ge
+      ON ge.group_id = g.id
+     AND ge.group_npub = g.group_npub
+    WHERE g.group_npub = ${writeGroupNpub}
+    LIMIT 1
+  `;
+  return row ?? null;
+}
+
+async function resolvePayloadGroup(sql: ReturnType<typeof getDb>, payload: GroupPayloadInput) {
+  const groupId = String(payload.group_id || '').trim();
+  if (groupId) {
+    const targetEpoch = Number.isInteger(payload.group_epoch) ? payload.group_epoch : null;
+    const rows = targetEpoch == null
+      ? await sql<{ group_id: string; group_npub: string; epoch: number }[]>`
+          SELECT ge.group_id, ge.group_npub, ge.epoch
+          FROM v4_group_epochs ge
+          WHERE ge.group_id = ${groupId}
+          ORDER BY ge.epoch DESC
+          LIMIT 1
+        `
+      : await sql<{ group_id: string; group_npub: string; epoch: number }[]>`
+          SELECT ge.group_id, ge.group_npub, ge.epoch
+          FROM v4_group_epochs ge
+          WHERE ge.group_id = ${groupId}
+            AND ge.epoch = ${targetEpoch}
+          LIMIT 1
+        `;
+    return rows[0] ?? {
+      group_id: groupId,
+      group_npub: String(payload.group_npub || '').trim(),
+      epoch: targetEpoch,
+    };
+  }
+
+  const groupNpub = String(payload.group_npub || '').trim();
+  if (!groupNpub) return null;
+
+  const [row] = await sql<{ group_id: string; group_npub: string; epoch: number }[]>`
+    SELECT ge.group_id, ge.group_npub, ge.epoch
+    FROM v4_group_epochs ge
+    WHERE ge.group_npub = ${groupNpub}
+    LIMIT 1
+  `;
+
+  return row ?? {
+      group_id: null,
+      group_npub: groupNpub,
+      epoch: Number.isInteger(payload.group_epoch) ? payload.group_epoch : null,
+    };
+}
+
+/**
+ * Sync records with version-chain enforcement.
+ * - New record (version=1, previous_version=0): insert if record_id doesn't exist
+ * - Update (version=N, previous_version=N-1): insert only if latest version == previous_version
+ * - Reject stale writes where previous_version doesn't match latest
+ */
+export async function syncRecords(
+  ownerNpub: string,
+  inputs: SyncRecordInput[],
+  authNpub: string,
+  authorizedWriteGroups: Set<string> = new Set(),
+): Promise<SyncResult> {
+  const sql = getDb();
+  let created = 0;
+  let updated = 0;
+  const rejected: { record_id: string; reason: string }[] = [];
+
+  for (const rec of inputs) {
+    // Validate owner matches
+    if (rec.owner_npub !== ownerNpub) {
+      rejected.push({ record_id: rec.record_id, reason: 'owner_npub mismatch' });
+      continue;
+    }
+    if (rec.signature_npub !== authNpub) {
+      rejected.push({ record_id: rec.record_id, reason: 'signature_npub must match authenticated npub' });
+      continue;
+    }
+
+    // Find the current latest version for this record_id
+    const [latest] = await sql<V4Record[]>`
+      SELECT * FROM v4_records
+      WHERE record_id = ${rec.record_id}
+      ORDER BY version DESC
+      LIMIT 1
+    `;
+
+    const currentVersion = latest?.version ?? 0;
+
+    // Enforce version chain
+    if (rec.previous_version !== currentVersion) {
+      rejected.push({
+        record_id: rec.record_id,
+        reason: `version conflict: expected previous_version=${currentVersion}, got ${rec.previous_version}`,
+      });
+      continue;
+    }
+
+    if (rec.version !== currentVersion + 1) {
+      rejected.push({
+        record_id: rec.record_id,
+        reason: `version must be ${currentVersion + 1}, got ${rec.version}`,
+      });
+      continue;
+    }
+
+    const isOwnerWrite = authNpub === ownerNpub;
+    if (!isOwnerWrite) {
+      const writeGroup = await resolveWriteGroup(sql, rec);
+      if (!writeGroup?.group_id) {
+        rejected.push({
+          record_id: rec.record_id,
+          reason: 'write_group_id or current write_group_npub required for non-owner writes',
+        });
+        continue;
+      }
+      if (!authorizedWriteGroups.has(writeGroup.group_id)) {
+        rejected.push({
+          record_id: rec.record_id,
+          reason: `missing valid group write proof for ${writeGroup.group_id}`,
+        });
+        continue;
+      }
+
+      const [membership] = await sql<{ ok: number }[]>`
+        SELECT 1 as ok
+        FROM v4_group_members gm
+        WHERE gm.group_id = ${writeGroup.group_id}
+          AND gm.member_npub = ${authNpub}
+        LIMIT 1
+      `;
+      if (!membership?.ok) {
+        rejected.push({
+          record_id: rec.record_id,
+          reason: `authenticated npub is not a current member of ${writeGroup.group_id}`,
+        });
+        continue;
+      }
+
+      if (currentVersion === 0) {
+        const sharedToGroup = (rec.group_payloads || []).some((gp) =>
+          gp.write === true
+          && (
+            String(gp.group_id || '').trim() === writeGroup.group_id
+            || String(gp.group_npub || '').trim() === writeGroup.group_npub
+          )
+        );
+        if (!sharedToGroup) {
+          rejected.push({
+            record_id: rec.record_id,
+            reason: `new shared record must include writable payload for ${writeGroup.group_id}`,
+          });
+          continue;
+        }
+      } else {
+        const [groupAccess] = await sql<{ ok: number }[]>`
+          SELECT 1 as ok
+          FROM v4_record_group_payloads
+          WHERE record_row_id = ${latest.id}
+            AND (
+              group_id = ${writeGroup.group_id}
+              OR group_npub = ${writeGroup.group_npub}
+            )
+            AND can_write = TRUE
+          LIMIT 1
+        `;
+        if (!groupAccess?.ok) {
+          rejected.push({
+            record_id: rec.record_id,
+            reason: `group ${writeGroup.group_id} does not have write access on prior version`,
+          });
+          continue;
+        }
+      }
+    }
+
+    // Insert the new version row
+    const [row] = await sql<V4Record[]>`
+      INSERT INTO v4_records (record_id, owner_npub, record_family_hash, version, previous_version, signature_npub, owner_ciphertext)
+      VALUES (${rec.record_id}, ${rec.owner_npub}, ${rec.record_family_hash}, ${rec.version}, ${rec.previous_version}, ${rec.signature_npub}, ${rec.owner_payload.ciphertext})
+      RETURNING *
+    `;
+
+    // Insert group payloads
+    if (rec.group_payloads && rec.group_payloads.length > 0) {
+      for (const gp of rec.group_payloads) {
+        const resolvedGroup = await resolvePayloadGroup(sql, gp);
+        await sql`
+          INSERT INTO v4_record_group_payloads (record_row_id, group_id, group_epoch, group_npub, ciphertext, can_write)
+          VALUES (
+            ${row.id},
+            ${resolvedGroup?.group_id ?? null},
+            ${resolvedGroup?.epoch ?? null},
+            ${resolvedGroup?.group_npub || gp.group_npub},
+            ${gp.ciphertext},
+            ${gp.write}
+          )
+        `;
+      }
+    }
+
+    if (currentVersion === 0) {
+      created++;
+    } else {
+      updated++;
+    }
+  }
+
+  return {
+    synced: created + updated,
+    created,
+    updated,
+    rejected,
+  };
+}
+
+/**
+ * Fetch the latest version of each record matching the filters.
+ */
+export async function fetchRecords(
+  input: FetchRecordsInput
+): Promise<RecordResponse[]> {
+  const sql = getDb();
+  const ownerNpub = input.owner_npub;
+  const viewerNpub = input.viewer_npub || ownerNpub;
+  const recordFamilyHash = input.record_family_hash;
+  const since = input.since;
+
+  let rows: V4Record[];
+
+  if (since) {
+    rows = await sql<V4Record[]>`
+      WITH latest_records AS (
+        SELECT DISTINCT ON (record_id) *
+        FROM v4_records
+        WHERE owner_npub = ${ownerNpub}
+          AND record_family_hash = ${recordFamilyHash}
+          AND updated_at > ${since}
+        ORDER BY record_id, version DESC
+      )
+        SELECT latest_records.*
+        FROM latest_records
+        WHERE ${viewerNpub} = ${ownerNpub}
+        OR EXISTS (
+          SELECT 1
+          FROM v4_record_group_payloads rgp
+          LEFT JOIN v4_group_member_keys gmk
+            ON gmk.group_id = rgp.group_id
+           AND gmk.key_version = rgp.group_epoch
+           AND gmk.member_npub = ${viewerNpub}
+           AND gmk.revoked_at IS NULL
+          LEFT JOIN v4_groups g
+            ON g.group_npub = rgp.group_npub
+          LEFT JOIN v4_group_members gm
+            ON gm.group_id = g.id
+           AND gm.member_npub = ${viewerNpub}
+          WHERE rgp.record_row_id = latest_records.id
+            AND (
+              gmk.id IS NOT NULL
+              OR (rgp.group_id IS NULL AND gm.id IS NOT NULL)
+            )
+        )
+      ORDER BY latest_records.updated_at ASC
+    `;
+  } else {
+    rows = await sql<V4Record[]>`
+      WITH latest_records AS (
+        SELECT DISTINCT ON (record_id) *
+        FROM v4_records
+        WHERE owner_npub = ${ownerNpub}
+          AND record_family_hash = ${recordFamilyHash}
+        ORDER BY record_id, version DESC
+      )
+        SELECT latest_records.*
+        FROM latest_records
+        WHERE ${viewerNpub} = ${ownerNpub}
+        OR EXISTS (
+          SELECT 1
+          FROM v4_record_group_payloads rgp
+          LEFT JOIN v4_group_member_keys gmk
+            ON gmk.group_id = rgp.group_id
+           AND gmk.key_version = rgp.group_epoch
+           AND gmk.member_npub = ${viewerNpub}
+           AND gmk.revoked_at IS NULL
+          LEFT JOIN v4_groups g
+            ON g.group_npub = rgp.group_npub
+          LEFT JOIN v4_group_members gm
+            ON gm.group_id = g.id
+           AND gm.member_npub = ${viewerNpub}
+          WHERE rgp.record_row_id = latest_records.id
+            AND (
+              gmk.id IS NOT NULL
+              OR (rgp.group_id IS NULL AND gm.id IS NOT NULL)
+            )
+        )
+      ORDER BY latest_records.updated_at ASC
+    `;
+  }
+
+  // Fetch group payloads for each row
+  const results: RecordResponse[] = [];
+  for (const row of rows) {
+    const payloads = await sql<V4RecordGroupPayload[]>`
+      SELECT * FROM v4_record_group_payloads WHERE record_row_id = ${row.id}
+    `;
+
+    results.push({
+      record_id: row.record_id,
+      owner_npub: row.owner_npub,
+      record_family_hash: row.record_family_hash,
+      version: row.version,
+      previous_version: row.previous_version,
+      signature_npub: row.signature_npub,
+      owner_payload: { ciphertext: row.owner_ciphertext },
+      group_payloads: payloads.map((p) => ({
+        group_id: p.group_id ?? undefined,
+        group_epoch: p.group_epoch ?? undefined,
+        group_npub: p.group_npub,
+        ciphertext: p.ciphertext,
+        write: p.can_write,
+      })),
+      updated_at: row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at),
+    });
+  }
+
+  return results;
+}

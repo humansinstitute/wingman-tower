@@ -1,0 +1,12 @@
+.env
+.env.*
+node_modules
+data
+apps/logs
+tmp
+db.sqlite
+coverage
+dist
+.git
+.DS_Store
+tests
