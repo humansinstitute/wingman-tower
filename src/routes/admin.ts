@@ -7,11 +7,14 @@ import { getDb } from '../db';
 export const adminRouter = new Hono();
 
 const VIEWER_TABLES = [
+  'v4_workspaces',
   'v4_groups',
+  'v4_group_epochs',
   'v4_group_members',
   'v4_group_member_keys',
   'v4_records',
   'v4_record_group_payloads',
+  'v4_storage_objects',
 ] as const;
 
 type ViewerTableName = (typeof VIEWER_TABLES)[number];
@@ -34,12 +37,17 @@ function normalizeOffset(value: string | undefined): number {
 
 function defaultOrderBy(table: ViewerTableName): string {
   switch (table) {
+    case 'v4_workspaces':
+      return 'updated_at DESC, created_at DESC';
     case 'v4_records':
       return 'updated_at DESC, version DESC';
     case 'v4_record_group_payloads':
       return 'record_row_id DESC';
+    case 'v4_storage_objects':
+      return 'created_at DESC';
     case 'v4_group_members':
     case 'v4_group_member_keys':
+    case 'v4_group_epochs':
       return 'created_at DESC';
     case 'v4_groups':
     default:
