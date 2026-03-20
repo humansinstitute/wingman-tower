@@ -1,6 +1,7 @@
 import { getDb } from '../db';
 import type {
   CreateWorkspaceInput,
+  UpdateWorkspaceInput,
   V4Group,
   V4GroupMember,
   V4Workspace,
@@ -80,6 +81,7 @@ export async function createWorkspace(
         creator_npub,
         name,
         description,
+        avatar_url,
         wrapped_workspace_nsec,
         wrapped_by_npub
       )
@@ -88,6 +90,7 @@ export async function createWorkspace(
         ${creatorNpub},
         ${input.name},
         ${input.description || ''},
+        ${null},
         ${input.wrapped_workspace_nsec},
         ${input.wrapped_by_npub}
       )
@@ -152,6 +155,85 @@ export async function canManageWorkspace(workspaceOwnerNpub: string, actorNpub: 
   return creator === actorNpub;
 }
 
+export async function updateWorkspace(
+  workspaceOwnerNpub: string,
+  input: UpdateWorkspaceInput,
+): Promise<V4Workspace | null> {
+  const sql = getDb();
+  const [current] = await sql<V4Workspace[]>`
+    SELECT *
+    FROM v4_workspaces
+    WHERE workspace_owner_npub = ${workspaceOwnerNpub}
+  `;
+  if (!current) return null;
+
+  const nextName = input.name ?? current.name;
+  const nextDescription = input.description ?? current.description;
+  const nextAvatarUrl = input.avatar_url === undefined ? current.avatar_url : input.avatar_url;
+
+  const [updated] = await sql<V4Workspace[]>`
+    UPDATE v4_workspaces
+    SET name = ${nextName},
+        description = ${nextDescription},
+        avatar_url = ${nextAvatarUrl},
+        updated_at = NOW()
+    WHERE workspace_owner_npub = ${workspaceOwnerNpub}
+    RETURNING *
+  `;
+
+  return updated ?? null;
+}
+
+export async function recoverWorkspace(
+  workspaceOwnerNpub: string,
+  creatorNpub: string,
+  name: string,
+  wrappedWorkspaceNsec: string,
+  wrappedByNpub: string,
+): Promise<V4Workspace> {
+  const sql = getDb();
+
+  const existing = await sql<V4Workspace[]>`
+    SELECT * FROM v4_workspaces WHERE workspace_owner_npub = ${workspaceOwnerNpub}
+  `;
+  if (existing.length > 0) {
+    throw Object.assign(new Error('workspace already exists'), { code: 'ALREADY_EXISTS' });
+  }
+
+  const isMember = await sql<{ count: string }[]>`
+    SELECT COUNT(*) AS count
+    FROM v4_group_members gm
+    JOIN v4_groups g ON g.id = gm.group_id
+    WHERE g.owner_npub = ${workspaceOwnerNpub}
+      AND gm.member_npub = ${creatorNpub}
+  `;
+  if (!isMember.length || Number(isMember[0].count) === 0) {
+    throw Object.assign(new Error('not a member of any group for this workspace owner'), { code: 'NOT_MEMBER' });
+  }
+
+  const sharedGroups = await sql<V4Group[]>`
+    SELECT * FROM v4_groups
+    WHERE owner_npub = ${workspaceOwnerNpub}
+      AND group_kind = 'workspace_shared'
+    ORDER BY created_at ASC
+    LIMIT 1
+  `;
+  const defaultGroupId = sharedGroups.length > 0 ? sharedGroups[0].id : null;
+
+  const [workspace] = await sql<V4Workspace[]>`
+    INSERT INTO v4_workspaces (
+      workspace_owner_npub, creator_npub, name, description,
+      wrapped_workspace_nsec, wrapped_by_npub, default_group_id
+    ) VALUES (
+      ${workspaceOwnerNpub}, ${creatorNpub}, ${name}, '',
+      ${wrappedWorkspaceNsec}, ${wrappedByNpub}, ${defaultGroupId}
+    )
+    RETURNING *
+  `;
+
+  return workspace;
+}
+
 export async function listWorkspacesForMember(memberNpub: string): Promise<WorkspaceListEntry[]> {
   const sql = getDb();
 
@@ -162,6 +244,7 @@ export async function listWorkspacesForMember(memberNpub: string): Promise<Works
       w.creator_npub,
       w.name,
       w.description,
+      w.avatar_url,
       w.default_group_id,
       dg.group_npub AS default_group_npub,
       pg.id AS private_group_id,
