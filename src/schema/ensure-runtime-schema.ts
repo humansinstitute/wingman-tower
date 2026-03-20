@@ -30,12 +30,18 @@ export async function ensureRuntimeSchema() {
       creator_npub TEXT NOT NULL,
       name TEXT NOT NULL,
       description TEXT NOT NULL DEFAULT '',
+      avatar_url TEXT,
       wrapped_workspace_nsec TEXT NOT NULL,
       wrapped_by_npub TEXT NOT NULL,
       default_group_id UUID REFERENCES v4_groups(id) ON DELETE SET NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )
+  `);
+
+  await sql.unsafe(`
+    ALTER TABLE v4_workspaces
+    ADD COLUMN IF NOT EXISTS avatar_url TEXT
   `);
 
   await sql.unsafe(`

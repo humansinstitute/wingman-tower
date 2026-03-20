@@ -26,6 +26,7 @@ export interface V4Workspace {
   creator_npub: string;
   name: string;
   description: string;
+  avatar_url: string | null;
   wrapped_workspace_nsec: string;
   wrapped_by_npub: string;
   default_group_id: string | null;
@@ -81,6 +82,12 @@ export interface CreateWorkspaceInput {
   private_group_member_keys: MemberKeyInput[];
 }
 
+export interface UpdateWorkspaceInput {
+  name?: string;
+  description?: string;
+  avatar_url?: string | null;
+}
+
 export interface AddMemberInput {
   member_npub: string;
   wrapped_group_nsec: string;
@@ -115,6 +122,7 @@ export interface WorkspaceListEntry {
   creator_npub: string;
   name: string;
   description: string;
+  avatar_url: string | null;
   default_group_id: string | null;
   default_group_npub: string | null;
   private_group_id: string | null;

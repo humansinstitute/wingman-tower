@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS v4_workspaces (
   creator_npub TEXT NOT NULL,
   name TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
+  avatar_url TEXT,
   wrapped_workspace_nsec TEXT NOT NULL,
   wrapped_by_npub TEXT NOT NULL,
   default_group_id UUID REFERENCES v4_groups(id) ON DELETE SET NULL,

@@ -13,7 +13,7 @@ For the current Wingman Be Free workflow:
 - Flight Deck is not intended to run in Docker for local dev; it is run locally via Wingman/PM2 and deployed to CapRover for the latest live version
 - Yoke is a local CLI and should ideally be consumable via `npx wingman-yoke` or `bunx wingman-yoke`
 
-On this machine, Tower may be pointed at existing host Postgres and MinIO services from Docker rather than starting fresh copies inside the same stack.
+The portable Docker bundle for Tower is backend-only: Tower, Postgres, and MinIO. Flight Deck stays outside this stack.
 
 ## Production
 

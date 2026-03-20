@@ -15,6 +15,41 @@ services:
       timeout: 5s
       retries: 20
 
+  minio:
+    image: minio/minio:latest
+    container_name: wingman-tower-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${STORAGE_S3_ACCESS_KEY:-superbased}
+      MINIO_ROOT_PASSWORD: ${STORAGE_S3_SECRET_KEY:-superbased-secret}
+    command: server /data --console-address ":9001"
+    ports:
+      - "${MINIO_API_HOST_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_HOST_PORT:-9001}:9001"
+    volumes:
+      - tower-minio-data:/data
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: wingman-tower-minio-init
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_started
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 $$STORAGE_S3_ACCESS_KEY $$STORAGE_S3_SECRET_KEY; do
+        echo 'waiting for minio...';
+        sleep 2;
+      done &&
+      mc mb -p local/$$STORAGE_S3_BUCKET || true &&
+      mc anonymous set none local/$$STORAGE_S3_BUCKET || true
+      "
+    environment:
+      STORAGE_S3_ACCESS_KEY: ${STORAGE_S3_ACCESS_KEY:-superbased}
+      STORAGE_S3_SECRET_KEY: ${STORAGE_S3_SECRET_KEY:-superbased-secret}
+      STORAGE_S3_BUCKET: ${STORAGE_S3_BUCKET:-superbased-storage}
+
   tower:
     build:
       context: .
@@ -23,6 +58,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     env_file:
       - ${TOWER_ENV_FILE:-.env.prod}
     environment:
@@ -33,8 +70,8 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:-postgres}
       DB_MAX_CONNECTIONS: ${DB_MAX_CONNECTIONS:-10}
       PORT: ${TOWER_PORT:-3100}
-      STORAGE_S3_ENDPOINT: ${STORAGE_S3_ENDPOINT:-http://host.docker.internal:9000}
-      STORAGE_S3_ENDPOINT_PUBLIC: ${STORAGE_S3_ENDPOINT_PUBLIC:-https://storage.otherstuff.ai}
+      STORAGE_S3_ENDPOINT: ${STORAGE_S3_ENDPOINT:-http://minio:9000}
+      STORAGE_S3_ENDPOINT_PUBLIC: ${STORAGE_S3_ENDPOINT_PUBLIC:-http://127.0.0.1:9000}
       STORAGE_S3_REGION: ${STORAGE_S3_REGION:-us-east-1}
       STORAGE_S3_ACCESS_KEY: ${STORAGE_S3_ACCESS_KEY:-superbased}
       STORAGE_S3_SECRET_KEY: ${STORAGE_S3_SECRET_KEY:-superbased-secret}
@@ -48,10 +85,9 @@ services:
       SUPERBASED_SERVICE_PUBKEY_HEX: ${SUPERBASED_SERVICE_PUBKEY_HEX:-}
       SUPERBASED_SERVICE_NPUB: ${SUPERBASED_SERVICE_NPUB:-}
       DB_WAIT_MAX_ATTEMPTS: ${DB_WAIT_MAX_ATTEMPTS:-40}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     ports:
       - "${TOWER_HOST_PORT:-3100}:3100"
 
 volumes:
   tower-postgres-data:
+  tower-minio-data:

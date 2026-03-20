@@ -125,6 +125,7 @@ describe('Workspaces API', () => {
     const body = await res.json();
     expect(body.workspace_owner_npub).toBe(WORKSPACE_OWNER);
     expect(body.name).toBe('Winn Family');
+    expect(body.avatar_url).toBeNull();
     expect(body.default_group_npub).toBe(payload.default_group_npub);
     expect(body.private_group_npub).toBe(payload.private_group_npub);
     expect(body.wrapped_workspace_nsec).toBe('wrapped-workspace-secret');
@@ -141,8 +142,48 @@ describe('Workspaces API', () => {
     const body = await res.json();
     expect(body.workspaces).toHaveLength(1);
     expect(body.workspaces[0].workspace_owner_npub).toBe(WORKSPACE_OWNER);
+    expect(body.workspaces[0].avatar_url).toBeNull();
     expect(body.workspaces[0].private_group_npub).toBeDefined();
     expect(body.workspaces[0].wrapped_workspace_nsec).toBe('wrapped-workspace-secret');
+  });
+
+  test('PATCH /api/v4/workspaces/:workspaceOwnerNpub updates workspace metadata', async () => {
+    const payload = {
+      name: 'Winn Family HQ',
+      description: 'Updated family workspace',
+      avatar_url: 'storage://workspace-avatar-1',
+    };
+
+    const res = await app.request(`/api/v4/workspaces/${encodeURIComponent(WORKSPACE_OWNER)}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: authHeader(`/api/v4/workspaces/${encodeURIComponent(WORKSPACE_OWNER)}`, 'PATCH', ownerSecret, payload),
+      },
+      body: JSON.stringify(payload),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.workspace_owner_npub).toBe(WORKSPACE_OWNER);
+    expect(body.name).toBe(payload.name);
+    expect(body.description).toBe(payload.description);
+    expect(body.avatar_url).toBe(payload.avatar_url);
+  });
+
+  test('PATCH /api/v4/workspaces/:workspaceOwnerNpub rejects non-manager', async () => {
+    const payload = { name: 'Nope' };
+
+    const res = await app.request(`/api/v4/workspaces/${encodeURIComponent(WORKSPACE_OWNER)}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: authHeader(`/api/v4/workspaces/${encodeURIComponent(WORKSPACE_OWNER)}`, 'PATCH', memberSecret, payload),
+      },
+      body: JSON.stringify(payload),
+    });
+
+    expect(res.status).toBe(403);
   });
 
   test('GET /api/v4/workspaces rejects mismatched auth', async () => {

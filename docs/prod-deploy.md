@@ -1,5 +1,7 @@
 # Wingman Tower Prod Deploy
 
+This Docker bundle is for the backend-only Tower service. Flight Deck is not part of this stack.
+
 ## Required env
 
 Tower runtime needs these values:
@@ -22,6 +24,8 @@ If you use the provided Docker Compose stack, set these wrapper vars too:
 
 - `TOWER_PORT`
 - `TOWER_HOST_PORT`
+- `MINIO_API_HOST_PORT`
+- `MINIO_CONSOLE_HOST_PORT`
 
 If you run raw `docker run`, pass the app port as `PORT`.
 
@@ -38,8 +42,10 @@ Optional because Tower has code defaults:
 
 Important container note:
 
-- `STORAGE_S3_ENDPOINT=http://127.0.0.1:9000` only works if Tower uses the host network.
-- In the provided Docker Compose stack, use `http://host.docker.internal:9000` to reach MinIO running on the Docker host.
+- The provided Docker Compose stack starts its own MinIO container and bucket bootstrap job.
+- In that default stack, use `STORAGE_S3_ENDPOINT=http://minio:9000`.
+- `STORAGE_S3_ENDPOINT_PUBLIC` should be the host or public URL clients will use for presigned downloads.
+- Only point Tower at an external S3/MinIO service if you are intentionally replacing the bundled storage container.
 
 ## First-time setup
 
@@ -55,9 +61,11 @@ cp .env.prod.example .env.prod
 - set `SUPERBASED_DIRECT_HTTPS_URL` to the production Tower URL
 - set `SUPERBASED_SERVICE_NSEC` to the stable service key
 - set `DB_PASSWORD` to a real password
-- confirm `STORAGE_S3_ENDPOINT`
+- set `STORAGE_S3_ENDPOINT_PUBLIC` to the MinIO URL your clients can reach
+- leave `STORAGE_S3_ENDPOINT=http://minio:9000` unless you are using external S3
 - leave `TOWER_PORT=3100` unless you intentionally want the app listening on a different internal port
 - set `TOWER_HOST_PORT` if you want to publish the container on a different host port
+- set `MINIO_API_HOST_PORT` / `MINIO_CONSOLE_HOST_PORT` if `9000` / `9001` are already occupied
 
 ## Start prod stack
 
@@ -69,14 +77,17 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
 This starts:
 
 - `wingman-tower-postgres`
+- `wingman-tower-minio`
+- `wingman-tower-minio-init`
 - `wingman-tower-b3`
 
-Postgres is created automatically and Tower waits for it, runs migrations, then starts the API.
+Postgres is created automatically, MinIO is bootstrapped with the configured bucket, and Tower waits for its dependencies, runs migrations, then starts the API.
 
 ## Health checks
 
 ```bash
 curl http://127.0.0.1:${TOWER_HOST_PORT:-3100}/health
+curl http://127.0.0.1:${MINIO_API_HOST_PORT:-9000}/minio/health/live
 docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f tower
 ```
 
