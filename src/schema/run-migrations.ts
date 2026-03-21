@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import postgres from 'postgres';
 import { getDb, closeDb } from '../db';
 import { config } from '../config';
+import { ensureRuntimeSchema } from './ensure-runtime-schema';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -36,6 +37,11 @@ async function run() {
   await ensureDatabaseExists();
 
   const sql = getDb();
+
+  // Run runtime schema changes first — adds new columns to existing tables
+  // so that CREATE INDEX in 001_init.sql can reference them
+  await ensureRuntimeSchema();
+
   const migrationPath = join(__dirname, '001_init.sql');
   const migration = readFileSync(migrationPath, 'utf-8');
 
