@@ -785,6 +785,131 @@ describe('Records API', () => {
     expect(res.status).toBe(403);
   });
 
+  // ---- Records Summary tests ----
+
+  test('GET /api/v4/records/summary - owner can fetch summary for all visible families', async () => {
+    const path = `/api/v4/records/summary?owner_npub=${OWNER}`;
+    const res = await app.request(path, {
+      headers: {
+        Authorization: authHeader(path, 'GET', ownerSecret),
+      },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.families).toBeInstanceOf(Array);
+    expect(body.families.length).toBeGreaterThan(0);
+
+    // Each family should have the expected shape
+    for (const fam of body.families) {
+      expect(typeof fam.record_family_hash).toBe('string');
+      expect(typeof fam.latest_updated_at).toBe('string');
+      expect(typeof fam.latest_record_count).toBe('number');
+      expect(fam.latest_record_count).toBeGreaterThan(0);
+      // count_since should be null when since is not provided
+      expect(fam.count_since).toBeNull();
+    }
+
+    // Should include families we created earlier
+    const familyHashes = body.families.map((f: any) => f.record_family_hash);
+    expect(familyHashes).toContain(FAMILY_HASH);
+    expect(familyHashes).toContain('coworker:document');
+  });
+
+  test('GET /api/v4/records/summary - record_family_hash filter works', async () => {
+    const path = `/api/v4/records/summary?owner_npub=${OWNER}&record_family_hash=${FAMILY_HASH}`;
+    const res = await app.request(path, {
+      headers: {
+        Authorization: authHeader(path, 'GET', ownerSecret),
+      },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.families).toHaveLength(1);
+    expect(body.families[0].record_family_hash).toBe(FAMILY_HASH);
+    expect(body.families[0].latest_record_count).toBeGreaterThanOrEqual(1);
+  });
+
+  test('GET /api/v4/records/summary - since returns expected count_since', async () => {
+    const pastDate = new Date(Date.now() - 86400000).toISOString();
+    const path = `/api/v4/records/summary?owner_npub=${OWNER}&record_family_hash=${FAMILY_HASH}&since=${pastDate}`;
+    const res = await app.request(path, {
+      headers: {
+        Authorization: authHeader(path, 'GET', ownerSecret),
+      },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.families).toHaveLength(1);
+    expect(typeof body.families[0].count_since).toBe('number');
+    expect(body.families[0].count_since).toBeGreaterThanOrEqual(1);
+
+    // Far future should give count_since = 0
+    const futureDate = new Date(Date.now() + 86400000).toISOString();
+    const path2 = `/api/v4/records/summary?owner_npub=${OWNER}&record_family_hash=${FAMILY_HASH}&since=${futureDate}`;
+    const res2 = await app.request(path2, {
+      headers: {
+        Authorization: authHeader(path2, 'GET', ownerSecret),
+      },
+    });
+
+    expect(res2.status).toBe(200);
+    const body2 = await res2.json();
+    expect(body2.families).toHaveLength(1);
+    expect(body2.families[0].count_since).toBe(0);
+  });
+
+  test('GET /api/v4/records/summary - member viewer only sees shared families', async () => {
+    const path = `/api/v4/records/summary?owner_npub=${OWNER}&viewer_npub=${MEMBER}`;
+    const res = await app.request(path, {
+      headers: {
+        Authorization: authHeader(path, 'GET', memberSecret),
+      },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // Member should only see families with shared records
+    const familyHashes = body.families.map((f: any) => f.record_family_hash);
+    // Member has access to coworker:document (shared group) and coworker:chat_message
+    // but NOT to families without shared records
+    expect(familyHashes).toContain('coworker:document');
+
+    // Outsider should see nothing
+    const path2 = `/api/v4/records/summary?owner_npub=${OWNER}&viewer_npub=${OUTSIDER}`;
+    const res2 = await app.request(path2, {
+      headers: {
+        Authorization: authHeader(path2, 'GET', outsiderSecret),
+      },
+    });
+
+    expect(res2.status).toBe(200);
+    const body2 = await res2.json();
+    expect(body2.families).toHaveLength(0);
+  });
+
+  test('GET /api/v4/records/summary - rejects spoofed viewer_npub', async () => {
+    const path = `/api/v4/records/summary?owner_npub=${OWNER}&viewer_npub=${MEMBER}`;
+    const res = await app.request(path, {
+      headers: {
+        Authorization: authHeader(path, 'GET', ownerSecret),
+      },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  test('GET /api/v4/records/summary - requires owner_npub', async () => {
+    const path = `/api/v4/records/summary`;
+    const res = await app.request(path, {
+      headers: {
+        Authorization: authHeader(path, 'GET', ownerSecret),
+      },
+    });
+    expect(res.status).toBe(400);
+  });
+
   test('records sync/fetch treats ciphertext as opaque strings', async () => {
     const opaqueOwnerCiphertext = 'not-json-just-opaque-bytes-abc123!@#$%';
     const opaqueGroupCiphertext = 'also-opaque-group-payload-xyz789';

@@ -237,6 +237,24 @@ export interface FetchRecordsInput {
   since?: string;
 }
 
+export interface FetchRecordsSummaryInput {
+  owner_npub: string;
+  viewer_npub?: string;
+  record_family_hash?: string;
+  since?: string;
+}
+
+export interface RecordFamilySummary {
+  record_family_hash: string;
+  latest_updated_at: string;
+  latest_record_count: number;
+  count_since: number | null;
+}
+
+export interface RecordsSummaryResponse {
+  families: RecordFamilySummary[];
+}
+
 export interface SyncResult {
   synced: number;
   created: number;

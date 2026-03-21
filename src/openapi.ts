@@ -1250,6 +1250,82 @@ export function buildOpenApiDocument(origin: string) {
           },
         },
       },
+      '/api/v4/records/summary': {
+        get: {
+          tags: ['Records'],
+          summary: 'Fetch per-family freshness summary for visible records',
+          parameters: [
+            {
+              name: 'owner_npub',
+              in: 'query',
+              required: true,
+              schema: { type: 'string' },
+            },
+            {
+              name: 'viewer_npub',
+              in: 'query',
+              required: false,
+              schema: { type: 'string' },
+            },
+            {
+              name: 'record_family_hash',
+              in: 'query',
+              required: false,
+              schema: { type: 'string' },
+            },
+            {
+              name: 'since',
+              in: 'query',
+              required: false,
+              schema: { type: 'string', format: 'date-time' },
+            },
+          ],
+          responses: {
+            '200': {
+              description: 'Records summary fetched',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      families: {
+                        type: 'array',
+                        items: {
+                          type: 'object',
+                          properties: {
+                            record_family_hash: { type: 'string' },
+                            latest_updated_at: { type: 'string', format: 'date-time' },
+                            latest_record_count: { type: 'integer' },
+                            count_since: { type: 'integer', nullable: true },
+                          },
+                          required: ['record_family_hash', 'latest_updated_at', 'latest_record_count', 'count_since'],
+                        },
+                      },
+                    },
+                    required: ['families'],
+                  },
+                },
+              },
+            },
+            '400': {
+              description: 'Bad request',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/ErrorResponse' },
+                },
+              },
+            },
+            '403': {
+              description: 'viewer_npub/auth mismatch',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/ErrorResponse' },
+                },
+              },
+            },
+          },
+        },
+      },
       '/api/v4/records': {
         get: {
           tags: ['Records'],

@@ -1,7 +1,9 @@
 import { getDb } from '../db';
 import type {
   FetchRecordsInput,
+  FetchRecordsSummaryInput,
   GroupPayloadInput,
+  RecordFamilySummary,
   SyncRecordInput,
   SyncResult,
   V4Record,
@@ -357,4 +359,204 @@ export async function fetchRecords(
   }
 
   return results;
+}
+
+/**
+ * Fetch a per-family summary of latest visible records.
+ */
+export async function fetchRecordsSummary(
+  input: FetchRecordsSummaryInput
+): Promise<RecordFamilySummary[]> {
+  const sql = getDb();
+  const ownerNpub = input.owner_npub;
+  const viewerNpub = input.viewer_npub || ownerNpub;
+  const recordFamilyHash = input.record_family_hash;
+  const since = input.since;
+
+  // Build the base query: latest version per record_id, optionally filtered by family
+  // Then apply visibility, then group by family
+  interface SummaryRow {
+    record_family_hash: string;
+    latest_updated_at: Date;
+    latest_record_count: string;
+  }
+  interface SummaryRowWithSince extends SummaryRow {
+    count_since: string;
+  }
+
+  if (since) {
+    const rows = recordFamilyHash
+      ? await sql<SummaryRowWithSince[]>`
+        WITH latest_records AS (
+          SELECT DISTINCT ON (record_id) id, record_family_hash, updated_at
+          FROM v4_records
+          WHERE owner_npub = ${ownerNpub}
+            AND record_family_hash = ${recordFamilyHash}
+          ORDER BY record_id, version DESC
+        ),
+        visible_records AS (
+          SELECT lr.*
+          FROM latest_records lr
+          WHERE ${viewerNpub} = ${ownerNpub}
+          OR EXISTS (
+            SELECT 1
+            FROM v4_record_group_payloads rgp
+            LEFT JOIN v4_group_member_keys gmk
+              ON gmk.group_id = rgp.group_id
+             AND gmk.key_version = rgp.group_epoch
+             AND gmk.member_npub = ${viewerNpub}
+             AND gmk.revoked_at IS NULL
+            LEFT JOIN v4_groups g
+              ON g.group_npub = rgp.group_npub
+            LEFT JOIN v4_group_members gm
+              ON gm.group_id = g.id
+             AND gm.member_npub = ${viewerNpub}
+            WHERE rgp.record_row_id = lr.id
+              AND (
+                gmk.id IS NOT NULL
+                OR (rgp.group_id IS NULL AND gm.id IS NOT NULL)
+              )
+          )
+        )
+        SELECT
+          record_family_hash,
+          MAX(updated_at) AS latest_updated_at,
+          COUNT(*)::text AS latest_record_count,
+          COUNT(*) FILTER (WHERE updated_at > ${since})::text AS count_since
+        FROM visible_records
+        GROUP BY record_family_hash
+      `
+      : await sql<SummaryRowWithSince[]>`
+        WITH latest_records AS (
+          SELECT DISTINCT ON (record_id) id, record_family_hash, updated_at
+          FROM v4_records
+          WHERE owner_npub = ${ownerNpub}
+          ORDER BY record_id, version DESC
+        ),
+        visible_records AS (
+          SELECT lr.*
+          FROM latest_records lr
+          WHERE ${viewerNpub} = ${ownerNpub}
+          OR EXISTS (
+            SELECT 1
+            FROM v4_record_group_payloads rgp
+            LEFT JOIN v4_group_member_keys gmk
+              ON gmk.group_id = rgp.group_id
+             AND gmk.key_version = rgp.group_epoch
+             AND gmk.member_npub = ${viewerNpub}
+             AND gmk.revoked_at IS NULL
+            LEFT JOIN v4_groups g
+              ON g.group_npub = rgp.group_npub
+            LEFT JOIN v4_group_members gm
+              ON gm.group_id = g.id
+             AND gm.member_npub = ${viewerNpub}
+            WHERE rgp.record_row_id = lr.id
+              AND (
+                gmk.id IS NOT NULL
+                OR (rgp.group_id IS NULL AND gm.id IS NOT NULL)
+              )
+          )
+        )
+        SELECT
+          record_family_hash,
+          MAX(updated_at) AS latest_updated_at,
+          COUNT(*)::text AS latest_record_count,
+          COUNT(*) FILTER (WHERE updated_at > ${since})::text AS count_since
+        FROM visible_records
+        GROUP BY record_family_hash
+      `;
+
+    return rows.map((r) => ({
+      record_family_hash: r.record_family_hash,
+      latest_updated_at: r.latest_updated_at instanceof Date ? r.latest_updated_at.toISOString() : String(r.latest_updated_at),
+      latest_record_count: parseInt(r.latest_record_count, 10),
+      count_since: parseInt(r.count_since, 10),
+    }));
+  }
+
+  const rows = recordFamilyHash
+    ? await sql<SummaryRow[]>`
+      WITH latest_records AS (
+        SELECT DISTINCT ON (record_id) id, record_family_hash, updated_at
+        FROM v4_records
+        WHERE owner_npub = ${ownerNpub}
+          AND record_family_hash = ${recordFamilyHash}
+        ORDER BY record_id, version DESC
+      ),
+      visible_records AS (
+        SELECT lr.*
+        FROM latest_records lr
+        WHERE ${viewerNpub} = ${ownerNpub}
+        OR EXISTS (
+          SELECT 1
+          FROM v4_record_group_payloads rgp
+          LEFT JOIN v4_group_member_keys gmk
+            ON gmk.group_id = rgp.group_id
+           AND gmk.key_version = rgp.group_epoch
+           AND gmk.member_npub = ${viewerNpub}
+           AND gmk.revoked_at IS NULL
+          LEFT JOIN v4_groups g
+            ON g.group_npub = rgp.group_npub
+          LEFT JOIN v4_group_members gm
+            ON gm.group_id = g.id
+           AND gm.member_npub = ${viewerNpub}
+          WHERE rgp.record_row_id = lr.id
+            AND (
+              gmk.id IS NOT NULL
+              OR (rgp.group_id IS NULL AND gm.id IS NOT NULL)
+            )
+        )
+      )
+      SELECT
+        record_family_hash,
+        MAX(updated_at) AS latest_updated_at,
+        COUNT(*)::text AS latest_record_count
+      FROM visible_records
+      GROUP BY record_family_hash
+    `
+    : await sql<SummaryRow[]>`
+      WITH latest_records AS (
+        SELECT DISTINCT ON (record_id) id, record_family_hash, updated_at
+        FROM v4_records
+        WHERE owner_npub = ${ownerNpub}
+        ORDER BY record_id, version DESC
+      ),
+      visible_records AS (
+        SELECT lr.*
+        FROM latest_records lr
+        WHERE ${viewerNpub} = ${ownerNpub}
+        OR EXISTS (
+          SELECT 1
+          FROM v4_record_group_payloads rgp
+          LEFT JOIN v4_group_member_keys gmk
+            ON gmk.group_id = rgp.group_id
+           AND gmk.key_version = rgp.group_epoch
+           AND gmk.member_npub = ${viewerNpub}
+           AND gmk.revoked_at IS NULL
+          LEFT JOIN v4_groups g
+            ON g.group_npub = rgp.group_npub
+          LEFT JOIN v4_group_members gm
+            ON gm.group_id = g.id
+           AND gm.member_npub = ${viewerNpub}
+          WHERE rgp.record_row_id = lr.id
+            AND (
+              gmk.id IS NOT NULL
+              OR (rgp.group_id IS NULL AND gm.id IS NOT NULL)
+            )
+        )
+      )
+      SELECT
+        record_family_hash,
+        MAX(updated_at) AS latest_updated_at,
+        COUNT(*)::text AS latest_record_count
+      FROM visible_records
+      GROUP BY record_family_hash
+    `;
+
+  return rows.map((r) => ({
+    record_family_hash: r.record_family_hash,
+    latest_updated_at: r.latest_updated_at instanceof Date ? r.latest_updated_at.toISOString() : String(r.latest_updated_at),
+    latest_record_count: parseInt(r.latest_record_count, 10),
+    count_since: null,
+  }));
 }
