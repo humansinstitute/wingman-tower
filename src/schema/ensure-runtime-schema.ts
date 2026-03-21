@@ -142,8 +142,10 @@ export async function ensureRuntimeSchema() {
     CREATE TABLE IF NOT EXISTS v4_storage_objects (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       owner_npub TEXT NOT NULL,
+      owner_group_id UUID REFERENCES v4_groups(id) ON DELETE SET NULL,
       created_by_npub TEXT NOT NULL,
-      access_group_npubs TEXT[] NOT NULL DEFAULT '{}',
+      access_group_ids UUID[] NOT NULL DEFAULT '{}',
+      is_public BOOLEAN NOT NULL DEFAULT false,
       file_name TEXT,
       content_type TEXT NOT NULL,
       size_bytes BIGINT NOT NULL DEFAULT 0,
@@ -162,8 +164,35 @@ export async function ensureRuntimeSchema() {
     CREATE INDEX IF NOT EXISTS idx_v4_storage_creator ON v4_storage_objects(created_by_npub)
   `);
 
+  // Migration: add new storage columns for existing tables
   await sql.unsafe(`
     ALTER TABLE v4_storage_objects
-    ADD COLUMN IF NOT EXISTS access_group_npubs TEXT[] NOT NULL DEFAULT '{}'
+    ADD COLUMN IF NOT EXISTS owner_group_id UUID REFERENCES v4_groups(id) ON DELETE SET NULL
+  `);
+
+  await sql.unsafe(`
+    ALTER TABLE v4_storage_objects
+    ADD COLUMN IF NOT EXISTS access_group_ids UUID[] NOT NULL DEFAULT '{}'
+  `);
+
+  await sql.unsafe(`
+    ALTER TABLE v4_storage_objects
+    ADD COLUMN IF NOT EXISTS is_public BOOLEAN NOT NULL DEFAULT false
+  `);
+
+  await sql.unsafe(`
+    CREATE INDEX IF NOT EXISTS idx_v4_storage_group ON v4_storage_objects(owner_group_id)
+  `);
+
+  // Backfill: resolve access_group_npubs → access_group_ids via v4_group_epochs
+  await sql.unsafe(`
+    UPDATE v4_storage_objects so
+    SET access_group_ids = COALESCE((
+      SELECT array_agg(DISTINCT ge.group_id)
+      FROM unnest(so.access_group_npubs) AS npub
+      JOIN v4_group_epochs ge ON ge.group_npub = npub
+    ), '{}')
+    WHERE so.access_group_ids = '{}'
+      AND so.access_group_npubs != '{}'
   `);
 }

@@ -11,8 +11,14 @@ let app: any;
 
 const ownerSecret = new Uint8Array(32).fill(21);
 const memberSecret = new Uint8Array(32).fill(22);
+const outsiderSecret = new Uint8Array(32).fill(23);
 const OWNER = nip19.npubEncode(getPublicKey(ownerSecret));
 const MEMBER = nip19.npubEncode(getPublicKey(memberSecret));
+const OUTSIDER = nip19.npubEncode(getPublicKey(outsiderSecret));
+
+const WORKSPACE_NPUB = 'npub1workspace_storage_test_00001';
+const GROUP_ID = '00000000-0000-0000-0000-000000000501';
+const GROUP_NPUB = 'npub1group_storage_test_epoch1';
 
 function sha256Hex(input: string | Uint8Array): string {
   return createHash('sha256').update(input).digest('hex');
@@ -90,6 +96,26 @@ beforeAll(async () => {
     await sql.unsafe(stmt);
   }
 
+  // Set up workspace, group, and membership for tests
+  await sql`
+    INSERT INTO v4_groups (id, owner_npub, name, group_npub, group_kind)
+    VALUES (${GROUP_ID}, ${WORKSPACE_NPUB}, 'Test Group', ${GROUP_NPUB}, 'shared')
+  `;
+  await sql`
+    INSERT INTO v4_group_epochs (group_id, epoch, group_npub, created_by_npub)
+    VALUES (${GROUP_ID}, 1, ${GROUP_NPUB}, ${OWNER})
+  `;
+  await sql`
+    INSERT INTO v4_workspaces (workspace_owner_npub, creator_npub, name, wrapped_workspace_nsec, wrapped_by_npub, default_group_id)
+    VALUES (${WORKSPACE_NPUB}, ${OWNER}, 'Test Workspace', 'wrapped_nsec_test', ${OWNER}, ${GROUP_ID})
+  `;
+  await sql`
+    INSERT INTO v4_group_members (group_id, member_npub)
+    VALUES
+      (${GROUP_ID}, ${OWNER}),
+      (${GROUP_ID}, ${MEMBER})
+  `;
+
   const serverModule = await import('../src/server');
   app = serverModule.createApp();
 });
@@ -99,9 +125,9 @@ afterAll(async () => {
 });
 
 describe('Storage API', () => {
-  test('prepare, upload, complete, and fetch content', async () => {
+  test('workspace owner can prepare, upload, complete, and fetch workspace-owned object', async () => {
     const preparePayload = JSON.stringify({
-      owner_npub: OWNER,
+      owner_npub: WORKSPACE_NPUB,
       content_type: 'audio/webm;codecs=opus',
       size_bytes: 4,
       file_name: 'note.webm',
@@ -119,6 +145,8 @@ describe('Storage API', () => {
     expect(prepareRes.status).toBe(200);
     const prepared = await prepareRes.json();
     expect(prepared.object_id).toBeTruthy();
+    expect(prepared.owner_group_id).toBeNull();
+    expect(prepared.is_public).toBe(false);
     expect(prepared.content_url).toContain(`/api/v4/storage/${prepared.object_id}/content`);
 
     const bytes = new Uint8Array([1, 2, 3, 4]);
@@ -151,27 +179,7 @@ describe('Storage API', () => {
     });
     expect(completeRes.status).toBe(200);
     const completed = await completeRes.json();
-    expect(completed.content_url).toContain(`/api/v4/storage/${prepared.object_id}/content`);
-
-    const metadataPath = `/api/v4/storage/${prepared.object_id}`;
-    const metadataRes = await app.request(metadataPath, {
-      headers: {
-        Authorization: authHeader(metadataPath, 'GET', ownerSecret),
-      },
-    });
-    expect(metadataRes.status).toBe(200);
-    const metadata = await metadataRes.json();
-    expect(metadata.object_id).toBe(prepared.object_id);
-    expect(metadata.content_url).toContain(`/api/v4/storage/${prepared.object_id}/content`);
-    expect(metadata.file_name).toBe('note.webm');
-
-    const downloadUrlPath = `/api/v4/storage/${prepared.object_id}/download-url`;
-    const downloadUrlRes = await app.request(downloadUrlPath, {
-      headers: {
-        Authorization: authHeader(downloadUrlPath, 'GET', ownerSecret),
-      },
-    });
-    expect(downloadUrlRes.status).toBe(200);
+    expect(completed.owner_group_id).toBeNull();
 
     const contentPath = `/api/v4/storage/${prepared.object_id}/content`;
     const contentRes = await app.request(contentPath, {
@@ -185,31 +193,52 @@ describe('Storage API', () => {
     expect(contentRes.headers.get('content-type')).toContain('audio/webm');
   });
 
-  test('group members can read blobs shared to an older rotated group epoch npub', async () => {
-    const historicalGroupNpub = 'npub1storage_epoch_v1_test';
-    const currentGroupNpub = 'npub1storage_epoch_v2_test';
-
+  test('non-owner cannot prepare workspace-owned object', async () => {
     const preparePayload = JSON.stringify({
-      owner_npub: OWNER,
-      content_type: 'audio/webm;codecs=opus',
-      size_bytes: 3,
-      file_name: 'rotated-note.webm',
-      access_group_npubs: [historicalGroupNpub],
+      owner_npub: WORKSPACE_NPUB,
+      content_type: 'text/plain',
+      file_name: 'unauthorized.txt',
     });
 
     const prepareRes = await app.request('/api/v4/storage/prepare', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: authHeader('/api/v4/storage/prepare', 'POST', ownerSecret, preparePayload),
+        Authorization: authHeader('/api/v4/storage/prepare', 'POST', memberSecret, preparePayload),
+      },
+      body: preparePayload,
+    });
+
+    expect(prepareRes.status).toBe(403);
+    const body = await prepareRes.json();
+    expect(body.error).toContain('workspace owner');
+  });
+
+  test('group member can prepare and upload group-owned object', async () => {
+    const preparePayload = JSON.stringify({
+      owner_npub: WORKSPACE_NPUB,
+      owner_group_id: GROUP_ID,
+      content_type: 'image/png',
+      size_bytes: 3,
+      file_name: 'group-avatar.png',
+      access_group_ids: [GROUP_ID],
+    });
+
+    const prepareRes = await app.request('/api/v4/storage/prepare', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: authHeader('/api/v4/storage/prepare', 'POST', memberSecret, preparePayload),
       },
       body: preparePayload,
     });
 
     expect(prepareRes.status).toBe(200);
     const prepared = await prepareRes.json();
+    expect(prepared.owner_group_id).toBe(GROUP_ID);
+    expect(prepared.access_group_ids).toEqual([GROUP_ID]);
 
-    const bytes = new Uint8Array([9, 8, 7]);
+    const bytes = new Uint8Array([10, 20, 30]);
     const uploadPath = `/api/v4/storage/${prepared.object_id}`;
     const uploadPayload = JSON.stringify({
       base64_data: Buffer.from(bytes).toString('base64'),
@@ -218,7 +247,7 @@ describe('Storage API', () => {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: authHeader(uploadPath, 'PUT', ownerSecret, uploadPayload),
+        Authorization: authHeader(uploadPath, 'PUT', memberSecret, uploadPayload),
       },
       body: uploadPayload,
     });
@@ -233,46 +262,81 @@ describe('Storage API', () => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: authHeader(completePath, 'POST', ownerSecret, completePayload),
+        Authorization: authHeader(completePath, 'POST', memberSecret, completePayload),
       },
       body: completePayload,
     });
     expect(completeRes.status).toBe(200);
+  });
 
-    await sql`
-      INSERT INTO v4_groups (id, owner_npub, name, group_npub, group_kind)
-      VALUES ('00000000-0000-0000-0000-000000000123', ${OWNER}, 'Other Stuff', ${currentGroupNpub}, 'shared')
-    `;
-    await sql`
-      INSERT INTO v4_group_epochs (group_id, epoch, group_npub, created_by_npub)
-      VALUES
-        ('00000000-0000-0000-0000-000000000123', 1, ${historicalGroupNpub}, ${OWNER}),
-        ('00000000-0000-0000-0000-000000000123', 2, ${currentGroupNpub}, ${OWNER})
-    `;
-    await sql`
-      INSERT INTO v4_group_members (group_id, member_npub)
-      VALUES ('00000000-0000-0000-0000-000000000123', ${MEMBER})
-    `;
-
-    const metadataPath = `/api/v4/storage/${prepared.object_id}`;
-    const metadataRes = await app.request(metadataPath, {
-      headers: {
-        Authorization: authHeader(metadataPath, 'GET', memberSecret),
-      },
+  test('non-group-member cannot prepare group-owned object', async () => {
+    const preparePayload = JSON.stringify({
+      owner_npub: WORKSPACE_NPUB,
+      owner_group_id: GROUP_ID,
+      content_type: 'text/plain',
+      file_name: 'outsider.txt',
     });
-    expect(metadataRes.status).toBe(200);
-    const metadata = await metadataRes.json();
-    expect(metadata.object_id).toBe(prepared.object_id);
-    expect(metadata.content_url).toContain(`/api/v4/storage/${prepared.object_id}/content`);
 
-    const downloadUrlPath = `/api/v4/storage/${prepared.object_id}/download-url`;
-    const downloadUrlRes = await app.request(downloadUrlPath, {
+    const prepareRes = await app.request('/api/v4/storage/prepare', {
+      method: 'POST',
       headers: {
-        Authorization: authHeader(downloadUrlPath, 'GET', memberSecret),
+        'Content-Type': 'application/json',
+        Authorization: authHeader('/api/v4/storage/prepare', 'POST', outsiderSecret, preparePayload),
       },
+      body: preparePayload,
     });
-    expect(downloadUrlRes.status).toBe(200);
 
+    expect(prepareRes.status).toBe(403);
+    const body = await prepareRes.json();
+    expect(body.error).toContain('not a member');
+  });
+
+  test('group member can read object via access_group_ids', async () => {
+    // Owner creates a group-owned object with access_group_ids
+    const preparePayload = JSON.stringify({
+      owner_npub: WORKSPACE_NPUB,
+      owner_group_id: GROUP_ID,
+      content_type: 'text/plain',
+      size_bytes: 5,
+      file_name: 'shared.txt',
+      access_group_ids: [GROUP_ID],
+    });
+
+    const prepareRes = await app.request('/api/v4/storage/prepare', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: authHeader('/api/v4/storage/prepare', 'POST', ownerSecret, preparePayload),
+      },
+      body: preparePayload,
+    });
+    expect(prepareRes.status).toBe(200);
+    const prepared = await prepareRes.json();
+
+    const bytes = new Uint8Array([5, 4, 3, 2, 1]);
+    const uploadPath = `/api/v4/storage/${prepared.object_id}`;
+    const uploadPayload = JSON.stringify({ base64_data: Buffer.from(bytes).toString('base64') });
+    await app.request(uploadPath, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: authHeader(uploadPath, 'PUT', ownerSecret, uploadPayload),
+      },
+      body: uploadPayload,
+    });
+
+    const completePath = `/api/v4/storage/${prepared.object_id}/complete`;
+    const completePayload = JSON.stringify({ sha256_hex: sha256Hex(bytes), size_bytes: bytes.byteLength });
+    await app.request(completePath, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: authHeader(completePath, 'POST', ownerSecret, completePayload),
+      },
+      body: completePayload,
+    });
+
+    // Member reads via group membership
     const contentPath = `/api/v4/storage/${prepared.object_id}/content`;
     const contentRes = await app.request(contentPath, {
       headers: {
@@ -281,6 +345,144 @@ describe('Storage API', () => {
     });
     expect(contentRes.status).toBe(200);
     const fetched = new Uint8Array(await contentRes.arrayBuffer());
-    expect(Array.from(fetched)).toEqual([9, 8, 7]);
+    expect(Array.from(fetched)).toEqual([5, 4, 3, 2, 1]);
+
+    // Outsider cannot read
+    const outsiderRes = await app.request(contentPath, {
+      headers: {
+        Authorization: authHeader(contentPath, 'GET', outsiderSecret),
+      },
+    });
+    expect(outsiderRes.status).toBe(404);
+  });
+
+  test('public objects are accessible without auth', async () => {
+    const preparePayload = JSON.stringify({
+      owner_npub: WORKSPACE_NPUB,
+      content_type: 'image/png',
+      size_bytes: 2,
+      file_name: 'avatar.png',
+      is_public: true,
+      access_group_ids: [GROUP_ID],
+    });
+
+    const prepareRes = await app.request('/api/v4/storage/prepare', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: authHeader('/api/v4/storage/prepare', 'POST', ownerSecret, preparePayload),
+      },
+      body: preparePayload,
+    });
+    expect(prepareRes.status).toBe(200);
+    const prepared = await prepareRes.json();
+    expect(prepared.is_public).toBe(true);
+
+    const bytes = new Uint8Array([0xff, 0xd8]);
+    const uploadPath = `/api/v4/storage/${prepared.object_id}`;
+    const uploadPayload = JSON.stringify({ base64_data: Buffer.from(bytes).toString('base64') });
+    await app.request(uploadPath, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: authHeader(uploadPath, 'PUT', ownerSecret, uploadPayload),
+      },
+      body: uploadPayload,
+    });
+
+    const completePath = `/api/v4/storage/${prepared.object_id}/complete`;
+    const completePayload = JSON.stringify({ sha256_hex: sha256Hex(bytes), size_bytes: bytes.byteLength });
+    await app.request(completePath, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: authHeader(completePath, 'POST', ownerSecret, completePayload),
+      },
+      body: completePayload,
+    });
+
+    // Access metadata without auth
+    const metadataPath = `/api/v4/storage/${prepared.object_id}`;
+    const metadataRes = await app.request(metadataPath);
+    expect(metadataRes.status).toBe(200);
+    const metadata = await metadataRes.json();
+    expect(metadata.is_public).toBe(true);
+
+    // Access content without auth
+    const contentPath = `/api/v4/storage/${prepared.object_id}/content`;
+    const contentRes = await app.request(contentPath);
+    expect(contentRes.status).toBe(200);
+    const fetched = new Uint8Array(await contentRes.arrayBuffer());
+    expect(Array.from(fetched)).toEqual([0xff, 0xd8]);
+    expect(contentRes.headers.get('cache-control')).toContain('public');
+
+    // Download URL without auth
+    const downloadUrlPath = `/api/v4/storage/${prepared.object_id}/download-url`;
+    const downloadUrlRes = await app.request(downloadUrlPath);
+    expect(downloadUrlRes.status).toBe(200);
+  });
+
+  test('S3 path includes group UUID for group-owned objects', async () => {
+    const preparePayload = JSON.stringify({
+      owner_npub: WORKSPACE_NPUB,
+      owner_group_id: GROUP_ID,
+      content_type: 'text/plain',
+      file_name: 'path-test.txt',
+    });
+
+    const prepareRes = await app.request('/api/v4/storage/prepare', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: authHeader('/api/v4/storage/prepare', 'POST', ownerSecret, preparePayload),
+      },
+      body: preparePayload,
+    });
+    expect(prepareRes.status).toBe(200);
+    const prepared = await prepareRes.json();
+
+    // Verify storage path in DB
+    const [row] = await sql`SELECT storage_path FROM v4_storage_objects WHERE id = ${prepared.object_id}`;
+    expect(row.storage_path).toContain(`v4/${WORKSPACE_NPUB}/${GROUP_ID}/`);
+    expect(row.storage_path).toContain('path-test.txt');
+  });
+
+  test('S3 path does not include group UUID for workspace-owned objects', async () => {
+    const preparePayload = JSON.stringify({
+      owner_npub: WORKSPACE_NPUB,
+      content_type: 'text/plain',
+      file_name: 'ws-path-test.txt',
+    });
+
+    const prepareRes = await app.request('/api/v4/storage/prepare', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: authHeader('/api/v4/storage/prepare', 'POST', ownerSecret, preparePayload),
+      },
+      body: preparePayload,
+    });
+    expect(prepareRes.status).toBe(200);
+    const prepared = await prepareRes.json();
+
+    const [row] = await sql`SELECT storage_path FROM v4_storage_objects WHERE id = ${prepared.object_id}`;
+    expect(row.storage_path).toMatch(new RegExp(`^v4/${WORKSPACE_NPUB}/[^/]+-ws-path-test.txt$`));
+  });
+
+  test('prepare rejects invalid owner_npub (no matching workspace)', async () => {
+    const preparePayload = JSON.stringify({
+      owner_npub: 'npub1nonexistent',
+      content_type: 'text/plain',
+    });
+
+    const prepareRes = await app.request('/api/v4/storage/prepare', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: authHeader('/api/v4/storage/prepare', 'POST', ownerSecret, preparePayload),
+      },
+      body: preparePayload,
+    });
+    expect(prepareRes.status).toBe(403);
   });
 });

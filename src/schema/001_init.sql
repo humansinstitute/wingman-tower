@@ -105,8 +105,10 @@ CREATE INDEX IF NOT EXISTS idx_v4_rgp_group ON v4_record_group_payloads(group_np
 CREATE TABLE IF NOT EXISTS v4_storage_objects (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   owner_npub TEXT NOT NULL,
+  owner_group_id UUID REFERENCES v4_groups(id) ON DELETE SET NULL,
   created_by_npub TEXT NOT NULL,
-  access_group_npubs TEXT[] NOT NULL DEFAULT '{}',
+  access_group_ids UUID[] NOT NULL DEFAULT '{}',
+  is_public BOOLEAN NOT NULL DEFAULT false,
   file_name TEXT,
   content_type TEXT NOT NULL,
   size_bytes BIGINT NOT NULL DEFAULT 0,
@@ -118,3 +120,4 @@ CREATE TABLE IF NOT EXISTS v4_storage_objects (
 
 CREATE INDEX IF NOT EXISTS idx_v4_storage_owner ON v4_storage_objects(owner_npub);
 CREATE INDEX IF NOT EXISTS idx_v4_storage_creator ON v4_storage_objects(created_by_npub);
+CREATE INDEX IF NOT EXISTS idx_v4_storage_group ON v4_storage_objects(owner_group_id);

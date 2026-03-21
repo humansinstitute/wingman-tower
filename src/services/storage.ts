@@ -21,9 +21,76 @@ function sanitizeFilename(name: string | null | undefined) {
   return safe || 'file.bin';
 }
 
-function buildStorageKey(rowId: string, ownerNpub: string, fileName: string | null | undefined) {
-  const datePrefix = new Date().toISOString().slice(0, 10);
-  return `v4/${ownerNpub}/${datePrefix}/${rowId}-${sanitizeFilename(fileName)}`;
+function buildStorageKey(rowId: string, ownerNpub: string, ownerGroupId: string | null, fileName: string | null | undefined) {
+  if (ownerGroupId) {
+    return `v4/${ownerNpub}/${ownerGroupId}/${rowId}-${sanitizeFilename(fileName)}`;
+  }
+  return `v4/${ownerNpub}/${rowId}-${sanitizeFilename(fileName)}`;
+}
+
+/**
+ * Verify that authNpub is authorized to upload to the given workspace/group.
+ *
+ * - If owner_group_id is set: authNpub must be a member of that group,
+ *   and the group must belong to the workspace identified by owner_npub.
+ * - If owner_group_id is null (workspace-owned): authNpub must be the workspace owner.
+ */
+async function verifyUploadAuthorization(
+  ownerNpub: string,
+  ownerGroupId: string | null,
+  authNpub: string,
+): Promise<{ authorized: boolean; reason?: string }> {
+  const sql = getDb();
+
+  // Resolve workspace
+  const [workspace] = await sql<{ creator_npub: string; workspace_owner_npub: string }[]>`
+    SELECT creator_npub, workspace_owner_npub
+    FROM v4_workspaces
+    WHERE workspace_owner_npub = ${ownerNpub}
+    LIMIT 1
+  `;
+
+  if (!workspace) {
+    return { authorized: false, reason: 'owner_npub does not match any workspace' };
+  }
+
+  if (!ownerGroupId) {
+    // Workspace-owned: only workspace creator can upload
+    if (authNpub !== workspace.creator_npub) {
+      return { authorized: false, reason: 'only the workspace owner can upload workspace-owned objects' };
+    }
+    return { authorized: true };
+  }
+
+  // Group-owned: verify group belongs to this workspace and authNpub is a member
+  const [group] = await sql<{ id: string; owner_npub: string }[]>`
+    SELECT id, owner_npub
+    FROM v4_groups
+    WHERE id = ${ownerGroupId}
+    LIMIT 1
+  `;
+
+  if (!group) {
+    return { authorized: false, reason: 'owner_group_id does not match any group' };
+  }
+
+  if (group.owner_npub !== workspace.workspace_owner_npub) {
+    return { authorized: false, reason: 'group does not belong to this workspace' };
+  }
+
+  const [membership] = await sql<{ ok: number }[]>`
+    SELECT 1 AS ok
+    FROM v4_group_members
+    WHERE group_id = ${ownerGroupId}
+      AND member_npub = ${authNpub}
+    LIMIT 1
+  `;
+
+  if (!membership?.ok) {
+    return { authorized: false, reason: 'authenticated npub is not a member of the specified group' };
+  }
+
+  return { authorized: true };
 }
 
 export async function prepareStorageObject(input: PrepareStorageInput, authNpub: string): Promise<V4StorageObject> {
@@ -31,15 +98,23 @@ export async function prepareStorageObject(input: PrepareStorageInput, authNpub:
   const fileName = String(input.file_name || '').trim() || null;
   const contentType = String(input.content_type || '').trim() || 'application/octet-stream';
   const sizeBytes = Number.isFinite(Number(input.size_bytes)) ? Number(input.size_bytes) : 0;
-  const accessGroupNpubs = [...new Set((input.access_group_npubs || []).map((value) => String(value || '').trim()).filter(Boolean))];
+  const ownerGroupId = String(input.owner_group_id || '').trim() || null;
+  const accessGroupIds = [...new Set((input.access_group_ids || []).map((value) => String(value || '').trim()).filter(Boolean))];
+  const isPublic = input.is_public === true;
+
+  // Verify upload authorization
+  const auth = await verifyUploadAuthorization(input.owner_npub, ownerGroupId, authNpub);
+  if (!auth.authorized) {
+    throw new Error(auth.reason || 'upload not authorized');
+  }
 
   const [row] = await sql<V4StorageObject[]>`
-    INSERT INTO v4_storage_objects (owner_npub, created_by_npub, access_group_npubs, file_name, content_type, size_bytes, storage_path)
-    VALUES (${input.owner_npub}, ${authNpub}, ${accessGroupNpubs}, ${fileName}, ${contentType}, ${sizeBytes}, '')
+    INSERT INTO v4_storage_objects (owner_npub, owner_group_id, created_by_npub, access_group_ids, is_public, file_name, content_type, size_bytes, storage_path)
+    VALUES (${input.owner_npub}, ${ownerGroupId}, ${authNpub}, ${accessGroupIds}, ${isPublic}, ${fileName}, ${contentType}, ${sizeBytes}, '')
     RETURNING *
   `;
 
-  const storagePath = buildStorageKey(row.id, row.owner_npub, fileName);
+  const storagePath = buildStorageKey(row.id, row.owner_npub, row.owner_group_id, fileName);
 
   const [updated] = await sql<V4StorageObject[]>`
     UPDATE v4_storage_objects
@@ -77,22 +152,43 @@ export async function getStorageObject(objectId: string): Promise<V4StorageObjec
   return row || null;
 }
 
-export async function canAccessStorageObject(objectId: string, authNpub: string): Promise<V4StorageObject | null> {
+/**
+ * Check if authNpub can access a storage object. Returns the object if accessible, null otherwise.
+ * Also handles is_public — pass authNpub as null for unauthenticated public access.
+ */
+export async function canAccessStorageObject(objectId: string, authNpub: string | null): Promise<V4StorageObject | null> {
   const sql = getDb();
   const row = await getStorageObject(objectId);
   if (!row) return null;
+
+  // Public objects are accessible by anyone
+  if (row.is_public) return row;
+
+  // All remaining checks require authentication
+  if (!authNpub) return null;
+
+  // Owner or uploader can always read
   if (row.owner_npub === authNpub || row.created_by_npub === authNpub) return row;
 
-  const accessGroups = Array.isArray(row.access_group_npubs)
-    ? row.access_group_npubs.map((value) => String(value || '').trim()).filter(Boolean)
+  // Check if authNpub is the workspace creator (workspace owner can always read)
+  const [workspace] = await sql<{ creator_npub: string }[]>`
+    SELECT creator_npub
+    FROM v4_workspaces
+    WHERE workspace_owner_npub = ${row.owner_npub}
+    LIMIT 1
+  `;
+  if (workspace?.creator_npub === authNpub) return row;
+
+  // Check group-based read access via stable group UUIDs
+  const accessGroups = Array.isArray(row.access_group_ids)
+    ? row.access_group_ids.map((value) => String(value || '').trim()).filter(Boolean)
     : [];
   if (accessGroups.length === 0) return null;
 
   const [membership] = await sql<{ ok: number }[]>`
     SELECT 1 AS ok
-    FROM v4_group_epochs ge
-    JOIN v4_group_members gm ON gm.group_id = ge.group_id
-    WHERE ge.group_npub = ANY(${accessGroups})
+    FROM v4_group_members gm
+    WHERE gm.group_id = ANY(${accessGroups}::uuid[])
       AND gm.member_npub = ${authNpub}
     LIMIT 1
   `;

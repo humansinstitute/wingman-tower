@@ -4,6 +4,7 @@ import {
   canAccessStorageObject,
   completeStorageObject,
   getStorageDownloadUrl,
+  getStorageObject,
   getStorageObjectContent,
   getStorageUploadUrl,
   prepareStorageObject,
@@ -29,7 +30,9 @@ storageRouter.post('/prepare', async (c) => {
     return c.json({
       object_id: row.id,
       owner_npub: row.owner_npub,
-      access_group_npubs: row.access_group_npubs,
+      owner_group_id: row.owner_group_id,
+      access_group_ids: row.access_group_ids,
+      is_public: row.is_public,
       file_name: row.file_name,
       content_type: row.content_type,
       size_bytes: row.size_bytes,
@@ -40,16 +43,43 @@ storageRouter.post('/prepare', async (c) => {
       completed_at: row.completed_at instanceof Date ? row.completed_at.toISOString() : row.completed_at,
     });
   } catch (error) {
-    return c.json({ error: error instanceof Error ? error.message : 'Failed to prepare storage object' }, 500);
+    const message = error instanceof Error ? error.message : 'Failed to prepare storage object';
+    const status = message.includes('not authorized') || message.includes('not a member') || message.includes('only the workspace owner') || message.includes('does not match')
+      ? 403
+      : 500;
+    return c.json({ error: message }, status);
   }
 });
 
 storageRouter.get('/:objectId', async (c) => {
-  const authNpub = await requireNip98Auth(c);
-  if (authNpub instanceof Response) return authNpub;
-
   const objectId = c.req.param('objectId');
   if (!objectId) return c.json({ error: 'objectId required' }, 400);
+
+  // Check if public first
+  const obj = await getStorageObject(objectId);
+  if (obj?.is_public) {
+    const origin = new URL(c.req.url).origin;
+    const downloadUrl = obj.completed_at ? await getStorageDownloadUrl(obj.id) : null;
+    return c.json({
+      object_id: obj.id,
+      owner_npub: obj.owner_npub,
+      owner_group_id: obj.owner_group_id,
+      created_by_npub: obj.created_by_npub,
+      access_group_ids: obj.access_group_ids,
+      is_public: obj.is_public,
+      file_name: obj.file_name,
+      content_type: obj.content_type,
+      size_bytes: obj.size_bytes,
+      sha256_hex: obj.sha256_hex,
+      content_url: `${origin}/api/v4/storage/${obj.id}/content`,
+      download_url: downloadUrl,
+      created_at: obj.created_at instanceof Date ? obj.created_at.toISOString() : obj.created_at,
+      completed_at: obj.completed_at instanceof Date ? obj.completed_at.toISOString() : obj.completed_at,
+    });
+  }
+
+  const authNpub = await requireNip98Auth(c);
+  if (authNpub instanceof Response) return authNpub;
 
   const row = await canAccessStorageObject(objectId, authNpub);
   if (!row) return c.json({ error: 'storage object not found or not readable by this npub' }, 404);
@@ -59,8 +89,10 @@ storageRouter.get('/:objectId', async (c) => {
   return c.json({
     object_id: row.id,
     owner_npub: row.owner_npub,
+    owner_group_id: row.owner_group_id,
     created_by_npub: row.created_by_npub,
-    access_group_npubs: row.access_group_npubs,
+    access_group_ids: row.access_group_ids,
+    is_public: row.is_public,
     file_name: row.file_name,
     content_type: row.content_type,
     size_bytes: row.size_bytes,
@@ -108,7 +140,9 @@ storageRouter.post('/:objectId/complete', async (c) => {
   return c.json({
     object_id: row.id,
     owner_npub: row.owner_npub,
-    access_group_npubs: row.access_group_npubs,
+    owner_group_id: row.owner_group_id,
+    access_group_ids: row.access_group_ids,
+    is_public: row.is_public,
     file_name: row.file_name,
     content_type: row.content_type,
     size_bytes: row.size_bytes,
@@ -118,11 +152,23 @@ storageRouter.post('/:objectId/complete', async (c) => {
 });
 
 storageRouter.get('/:objectId/download-url', async (c) => {
+  const objectId = c.req.param('objectId');
+  if (!objectId) return c.json({ error: 'objectId required' }, 400);
+
+  // Check if public first
+  const obj = await getStorageObject(objectId);
+  if (obj?.is_public) {
+    const origin = new URL(c.req.url).origin;
+    return c.json({
+      object_id: obj.id,
+      content_url: `${origin}/api/v4/storage/${obj.id}/content`,
+      download_url: (await getStorageDownloadUrl(obj.id)) || `${origin}/api/v4/storage/${obj.id}/content`,
+    });
+  }
+
   const authNpub = await requireNip98Auth(c);
   if (authNpub instanceof Response) return authNpub;
 
-  const objectId = c.req.param('objectId');
-  if (!objectId) return c.json({ error: 'objectId required' }, 400);
   const row = await canAccessStorageObject(objectId, authNpub);
   if (!row) return c.json({ error: 'storage object not found or not readable by this npub' }, 404);
 
@@ -135,17 +181,36 @@ storageRouter.get('/:objectId/download-url', async (c) => {
 });
 
 storageRouter.get('/:objectId/content', async (c) => {
+  const objectId = c.req.param('objectId');
+  if (!objectId) return c.json({ error: 'objectId required' }, 400);
+
+  // Check if public first
+  const obj = await getStorageObject(objectId);
+  if (obj?.is_public) {
+    if (!obj.completed_at) return c.json({ error: 'storage object upload not completed' }, 409);
+    const content = await getStorageObjectContent(objectId);
+    if (!content) return c.json({ error: 'storage object content missing' }, 404);
+    const { bytes, size } = content;
+    return new Response(bytes, {
+      headers: {
+        'Content-Type': obj.content_type || 'application/octet-stream',
+        'Content-Length': String(obj.size_bytes || size || 0),
+        'Content-Disposition': `inline; filename=\"${obj.file_name || `${obj.id}.bin`}\"`,
+        'Cache-Control': 'public, max-age=3600',
+      },
+    });
+  }
+
   const authNpub = await requireNip98Auth(c);
   if (authNpub instanceof Response) return authNpub;
 
-  const objectId = c.req.param('objectId');
-  if (!objectId) return c.json({ error: 'objectId required' }, 400);
   const row = await canAccessStorageObject(objectId, authNpub);
   if (!row) return c.json({ error: 'storage object not found or not readable by this npub' }, 404);
+  if (!row.completed_at) return c.json({ error: 'storage object upload not completed' }, 409);
+
   const content = await getStorageObjectContent(objectId);
   if (!content) return c.json({ error: 'storage object content missing' }, 404);
   const { bytes, size } = content;
-  if (!row.completed_at) return c.json({ error: 'storage object upload not completed' }, 409);
 
   return new Response(bytes, {
     headers: {

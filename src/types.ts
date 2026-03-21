@@ -136,8 +136,10 @@ export interface WorkspaceListEntry {
 export interface V4StorageObject {
   id: string;
   owner_npub: string;
+  owner_group_id: string | null;
   created_by_npub: string;
-  access_group_npubs: string[];
+  access_group_ids: string[];
+  is_public: boolean;
   file_name: string | null;
   content_type: string;
   size_bytes: number;
@@ -149,7 +151,9 @@ export interface V4StorageObject {
 
 export interface PrepareStorageInput {
   owner_npub: string;
-  access_group_npubs?: string[] | null;
+  owner_group_id?: string | null;
+  access_group_ids?: string[] | null;
+  is_public?: boolean;
   content_type: string;
   size_bytes?: number | null;
   file_name?: string | null;
