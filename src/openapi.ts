@@ -1250,6 +1250,74 @@ export function buildOpenApiDocument(origin: string) {
           },
         },
       },
+      '/api/v4/records/heartbeat': {
+        post: {
+          tags: ['Records'],
+          summary: 'Check which record families have updates since client cursors',
+          description: 'Accepts client-side cursors (latest_updated_at per family) and returns which families are stale. Designed for efficient 1/sec polling instead of per-family fetches.',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    owner_npub: { type: 'string' },
+                    viewer_npub: { type: 'string', description: 'Defaults to owner_npub if omitted' },
+                    family_cursors: {
+                      type: 'object',
+                      additionalProperties: { type: 'string', format: 'date-time', nullable: true },
+                      description: 'Map of record_family_hash to latest_updated_at ISO timestamp the client has seen (or null)',
+                    },
+                  },
+                  required: ['owner_npub'],
+                },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Heartbeat result',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      stale_families: {
+                        type: 'array',
+                        items: { type: 'string' },
+                        description: 'Family hashes that have newer data than the client cursor',
+                      },
+                      server_cursors: {
+                        type: 'object',
+                        additionalProperties: { type: 'string', format: 'date-time' },
+                        description: 'Current server-side latest_updated_at per family',
+                      },
+                    },
+                    required: ['stale_families', 'server_cursors'],
+                  },
+                },
+              },
+            },
+            '400': {
+              description: 'Bad request',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/ErrorResponse' },
+                },
+              },
+            },
+            '403': {
+              description: 'viewer_npub/auth mismatch',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/ErrorResponse' },
+                },
+              },
+            },
+          },
+        },
+      },
       '/api/v4/records/summary': {
         get: {
           tags: ['Records'],

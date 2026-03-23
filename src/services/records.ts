@@ -3,6 +3,7 @@ import type {
   FetchRecordsInput,
   FetchRecordsSummaryInput,
   GroupPayloadInput,
+  HeartbeatResponse,
   PaginatedRecordsResponse,
   RecordFamilySummary,
   SyncRecordInput,
@@ -656,4 +657,37 @@ export async function fetchRecordsSummary(
     latest_record_count: parseInt(r.latest_record_count, 10),
     count_since: null,
   }));
+}
+
+/**
+ * Lightweight heartbeat check: compare client family cursors against server state.
+ * Returns only the families that have updates the client hasn't seen.
+ */
+export async function heartbeatCheck(
+  ownerNpub: string,
+  viewerNpub: string,
+  familyCursors: Record<string, string | null>,
+): Promise<HeartbeatResponse> {
+  const families = await fetchRecordsSummary({
+    owner_npub: ownerNpub,
+    viewer_npub: viewerNpub,
+  });
+
+  const serverCursors: Record<string, string> = {};
+  const staleFamilies: string[] = [];
+
+  for (const family of families) {
+    const serverTs = family.latest_updated_at;
+    serverCursors[family.record_family_hash] = serverTs;
+
+    const clientTs = familyCursors[family.record_family_hash];
+    if (!clientTs || serverTs > clientTs) {
+      staleFamilies.push(family.record_family_hash);
+    }
+  }
+
+  return {
+    stale_families: staleFamilies,
+    server_cursors: serverCursors,
+  };
 }

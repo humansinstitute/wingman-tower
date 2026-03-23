@@ -275,3 +275,14 @@ export interface SyncResult {
   updated: number;
   rejected: { record_id: string; reason: string }[];
 }
+
+export interface HeartbeatRequestBody {
+  owner_npub: string;
+  viewer_npub?: string;
+  family_cursors: Record<string, string | null>;
+}
+
+export interface HeartbeatResponse {
+  stale_families: string[];
+  server_cursors: Record<string, string>;
+}

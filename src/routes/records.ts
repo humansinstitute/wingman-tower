@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
-import { syncRecords, fetchRecords, fetchRecordsSummary } from '../services/records';
+import { syncRecords, fetchRecords, fetchRecordsSummary, heartbeatCheck } from '../services/records';
 import { getCurrentGroupEpoch, getGroupByCurrentNpub } from '../services/groups';
 import { requireNip98Auth, verifyNip98AuthHeader } from '../auth';
-import type { FetchRecordsInput, FetchRecordsSummaryInput, SyncRequestBody } from '../types';
+import type { FetchRecordsInput, FetchRecordsSummaryInput, HeartbeatRequestBody, SyncRequestBody } from '../types';
 
 export const recordsRouter = new Hono();
 
@@ -68,6 +68,31 @@ recordsRouter.post('/sync', async (c) => {
     return c.json(result);
   } catch (error) {
     return c.json({ error: error instanceof Error ? error.message : 'Failed to sync records' }, 500);
+  }
+});
+
+// POST /api/v4/records/heartbeat
+recordsRouter.post('/heartbeat', async (c) => {
+  const authNpub = await requireNip98Auth(c);
+  if (authNpub instanceof Response) return authNpub;
+
+  const body = await c.req.json<HeartbeatRequestBody>();
+  if (!body.owner_npub) {
+    return c.json({ error: 'owner_npub required' }, 400);
+  }
+  if (body.viewer_npub && body.viewer_npub !== authNpub) {
+    return c.json({ error: 'viewer_npub must match authenticated npub' }, 403);
+  }
+
+  try {
+    const result = await heartbeatCheck(
+      body.owner_npub,
+      body.viewer_npub || body.owner_npub,
+      body.family_cursors || {},
+    );
+    return c.json(result);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : 'Heartbeat failed' }, 500);
   }
 });
 
