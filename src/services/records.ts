@@ -3,6 +3,7 @@ import type {
   FetchRecordsInput,
   FetchRecordsSummaryInput,
   GroupPayloadInput,
+  PaginatedRecordsResponse,
   RecordFamilySummary,
   SyncRecordInput,
   SyncResult,
@@ -251,19 +252,58 @@ export async function syncRecords(
 
 /**
  * Fetch the latest version of each record matching the filters.
+ * Supports pagination via limit/offset.
  */
 export async function fetchRecords(
   input: FetchRecordsInput
-): Promise<RecordResponse[]> {
+): Promise<PaginatedRecordsResponse> {
   const sql = getDb();
   const ownerNpub = input.owner_npub;
   const viewerNpub = input.viewer_npub || ownerNpub;
   const recordFamilyHash = input.record_family_hash;
   const since = input.since;
+  const limit = Math.min(Math.max(input.limit ?? 200, 1), 1000);
+  const offset = Math.max(input.offset ?? 0, 0);
 
   let rows: V4Record[];
+  let total: number;
 
   if (since) {
+    // Count total visible records
+    const [countRow] = await sql<{ count: string }[]>`
+      WITH latest_records AS (
+        SELECT DISTINCT ON (record_id) *
+        FROM v4_records
+        WHERE owner_npub = ${ownerNpub}
+          AND record_family_hash = ${recordFamilyHash}
+          AND updated_at > ${since}
+        ORDER BY record_id, version DESC
+      )
+      SELECT COUNT(*)::text AS count
+      FROM latest_records
+      WHERE ${viewerNpub} = ${ownerNpub}
+      OR EXISTS (
+        SELECT 1
+        FROM v4_record_group_payloads rgp
+        LEFT JOIN v4_group_member_keys gmk
+          ON gmk.group_id = rgp.group_id
+         AND gmk.key_version = rgp.group_epoch
+         AND gmk.member_npub = ${viewerNpub}
+         AND gmk.revoked_at IS NULL
+        LEFT JOIN v4_groups g
+          ON g.group_npub = rgp.group_npub
+        LEFT JOIN v4_group_members gm
+          ON gm.group_id = g.id
+         AND gm.member_npub = ${viewerNpub}
+        WHERE rgp.record_row_id = latest_records.id
+          AND (
+            gmk.id IS NOT NULL
+            OR (rgp.group_id IS NULL AND gm.id IS NOT NULL)
+          )
+      )
+    `;
+    total = parseInt(countRow.count, 10);
+
     rows = await sql<V4Record[]>`
       WITH latest_records AS (
         SELECT DISTINCT ON (record_id) *
@@ -296,8 +336,43 @@ export async function fetchRecords(
             )
         )
       ORDER BY latest_records.updated_at ASC
+      LIMIT ${limit} OFFSET ${offset}
     `;
   } else {
+    // Count total visible records
+    const [countRow] = await sql<{ count: string }[]>`
+      WITH latest_records AS (
+        SELECT DISTINCT ON (record_id) *
+        FROM v4_records
+        WHERE owner_npub = ${ownerNpub}
+          AND record_family_hash = ${recordFamilyHash}
+        ORDER BY record_id, version DESC
+      )
+      SELECT COUNT(*)::text AS count
+      FROM latest_records
+      WHERE ${viewerNpub} = ${ownerNpub}
+      OR EXISTS (
+        SELECT 1
+        FROM v4_record_group_payloads rgp
+        LEFT JOIN v4_group_member_keys gmk
+          ON gmk.group_id = rgp.group_id
+         AND gmk.key_version = rgp.group_epoch
+         AND gmk.member_npub = ${viewerNpub}
+         AND gmk.revoked_at IS NULL
+        LEFT JOIN v4_groups g
+          ON g.group_npub = rgp.group_npub
+        LEFT JOIN v4_group_members gm
+          ON gm.group_id = g.id
+         AND gm.member_npub = ${viewerNpub}
+        WHERE rgp.record_row_id = latest_records.id
+          AND (
+            gmk.id IS NOT NULL
+            OR (rgp.group_id IS NULL AND gm.id IS NOT NULL)
+          )
+      )
+    `;
+    total = parseInt(countRow.count, 10);
+
     rows = await sql<V4Record[]>`
       WITH latest_records AS (
         SELECT DISTINCT ON (record_id) *
@@ -329,36 +404,58 @@ export async function fetchRecords(
             )
         )
       ORDER BY latest_records.updated_at ASC
+      LIMIT ${limit} OFFSET ${offset}
     `;
   }
 
-  // Fetch group payloads for each row
+  // Batch-fetch group payloads for all rows in a single query
   const results: RecordResponse[] = [];
-  for (const row of rows) {
-    const payloads = await sql<V4RecordGroupPayload[]>`
-      SELECT * FROM v4_record_group_payloads WHERE record_row_id = ${row.id}
+  if (rows.length > 0) {
+    const rowIds = rows.map((r) => r.id);
+    const allPayloads = await sql<V4RecordGroupPayload[]>`
+      SELECT * FROM v4_record_group_payloads WHERE record_row_id IN ${sql(rowIds)}
     `;
 
-    results.push({
-      record_id: row.record_id,
-      owner_npub: row.owner_npub,
-      record_family_hash: row.record_family_hash,
-      version: row.version,
-      previous_version: row.previous_version,
-      signature_npub: row.signature_npub,
-      owner_payload: { ciphertext: row.owner_ciphertext },
-      group_payloads: payloads.map((p) => ({
-        group_id: p.group_id ?? undefined,
-        group_epoch: p.group_epoch ?? undefined,
-        group_npub: p.group_npub,
-        ciphertext: p.ciphertext,
-        write: p.can_write,
-      })),
-      updated_at: row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at),
-    });
+    // Group payloads by record_row_id
+    const payloadsByRowId = new Map<string, V4RecordGroupPayload[]>();
+    for (const p of allPayloads) {
+      const existing = payloadsByRowId.get(p.record_row_id);
+      if (existing) {
+        existing.push(p);
+      } else {
+        payloadsByRowId.set(p.record_row_id, [p]);
+      }
+    }
+
+    for (const row of rows) {
+      const payloads = payloadsByRowId.get(row.id) || [];
+      results.push({
+        record_id: row.record_id,
+        owner_npub: row.owner_npub,
+        record_family_hash: row.record_family_hash,
+        version: row.version,
+        previous_version: row.previous_version,
+        signature_npub: row.signature_npub,
+        owner_payload: { ciphertext: row.owner_ciphertext },
+        group_payloads: payloads.map((p) => ({
+          group_id: p.group_id ?? undefined,
+          group_epoch: p.group_epoch ?? undefined,
+          group_npub: p.group_npub,
+          ciphertext: p.ciphertext,
+          write: p.can_write,
+        })),
+        updated_at: row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at),
+      });
+    }
   }
 
-  return results;
+  return {
+    records: results,
+    total,
+    limit,
+    offset,
+    has_more: offset + rows.length < total,
+  };
 }
 
 /**

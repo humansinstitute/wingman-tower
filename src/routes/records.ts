@@ -121,14 +121,21 @@ recordsRouter.get('/', async (c) => {
     return c.json({ error: 'viewer_npub must match authenticated npub' }, 403);
   }
 
+  const limitParam = c.req.query('limit');
+  const offsetParam = c.req.query('offset');
+  const limit = limitParam ? parseInt(limitParam, 10) : undefined;
+  const offset = offsetParam ? parseInt(offsetParam, 10) : undefined;
+
   try {
-    const records = await fetchRecords({
+    const result = await fetchRecords({
       owner_npub: ownerNpub,
       viewer_npub: authNpub,
       record_family_hash: recordFamilyHash,
       since: since || undefined,
+      limit: Number.isFinite(limit) ? limit : undefined,
+      offset: Number.isFinite(offset) ? offset : undefined,
     } satisfies FetchRecordsInput);
-    return c.json({ records });
+    return c.json(result);
   } catch (error) {
     return c.json({ error: error instanceof Error ? error.message : 'Failed to fetch records' }, 500);
   }

@@ -239,6 +239,16 @@ export interface FetchRecordsInput {
   viewer_npub?: string;
   record_family_hash: string;
   since?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface PaginatedRecordsResponse {
+  records: RecordResponse[];
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
 }
 
 export interface FetchRecordsSummaryInput {
