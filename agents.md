@@ -1,41 +1,110 @@
-# SuperBased BE Instructions
+# Wingman Tower Agent Guide
 
-This backend implements the generic sync and access model described in:
+Use this file for work inside `wingman-tower/`. Keep `agents.md` and `claude.md` identical.
 
-- [../ARCHITECTURE.md](../ARCHITECTURE.md)
-- [../design.md](../design.md)
-- [../roadmap.md](../roadmap.md)
+## What this repo owns
 
-## Role of this project
+`wingman-tower` is the authority backend for Wingman Be Free.
 
-- Provide encrypted sync and access control for Coworker workspaces
-- Stay generic enough to support multiple record families
-- Avoid taking on app-specific translation responsibilities
+It owns:
 
-## Hard rules
+- workspace creation, listing, and recovery
+- group creation, membership, wrapped keys, and epoch rotation
+- record sync, fetch, and visibility rules
+- storage prepare/upload/complete/read metadata
+- service identity, NIP-98 auth, and OpenAPI output
+- schema and runtime migrations
 
-- Do not encode Coworker UI assumptions into backend storage
-- Do not make the backend schema-aware beyond generic routing/indexing helpers
-- Keep access rules generic around owner, groups, membership, and version chains
-- Treat member-aware fetch as the real security boundary
+It does not own:
 
-## Workspace model
+- browser materialization or UX
+- CLI-specific local state
+- app-specific translation of payload data into local UI rows
+- optional Flight Logs memory behavior
 
-- A workspace has one `owner_npub`
-- In v1 a workspace has one authoritative backend
-- Users may belong to multiple workspaces, but that is not per-person backend fanout
-- Keep backend interfaces workspace-aware so the FE can switch cleanly
+## Read this first
 
-## Data model principles
+- repo purpose: `README.md`
+- shared workspace framing: `../README.md`
+- current architecture: `../ARCHITECTURE.md`
+- implementation seams: `../design.md`
+- backend contract types: `src/types.ts`
+- public API surface: `src/openapi.ts`
 
-- Records are encrypted payloads plus generic metadata
-- `record_family_hash` exists for routing and filtering, not for app translation
-- Groups are the access primitive
-- Group-authorized writes flow forward from the previous valid record state
-- Conflicts should be handled generically, not through app-specific shortcuts
+## Code map
 
-## Future direction
+- `src/server.ts`: assembles the Hono app
+- `src/routes/`: route handlers by domain
+- `src/services/`: business logic and DB-facing behavior
+- `src/schema/`: bootstrap SQL, runtime schema checks, migrations, replay tools
+- `src/auth.ts`: NIP-98 verification
+- `src/service-identity.ts`, `src/identity.ts`: service identity helpers
+- `src/config.ts`: env-driven runtime config
+- `tests/`: contract and behavior coverage
+- `docs/prod-deploy.md`: deployment notes
+- `docs/design/sync_progress.md`: sync-specific design notes
+- `docs/sorage_current.md`: current storage notes
 
-- Support workspace discovery and member-aware access cleanly
-- Leave room for replication and mirroring later
-- Keep authority-backend and mirror concepts distinct
+## Ownership by area
+
+- workspace APIs and defaults: `src/routes/workspaces.ts`, `src/services/workspaces.ts`
+- group APIs and rotation: `src/routes/groups.ts`, `src/services/groups.ts`
+- record sync/fetch/summary: `src/routes/records.ts`, `src/services/records.ts`
+- storage ACLs and blob metadata: `src/routes/storage.ts`, `src/services/storage.ts`
+- admin and table viewer: `src/routes/admin.ts`, `src/admin-token.ts`
+
+## Cross-app boundaries
+
+Tower is the source of truth for these shared seams:
+
+- `connection_token`
+- workspace owner identity
+- group ID versus `group_npub` epoch semantics
+- record sync request and response shapes
+- storage metadata and `content_url`
+- NIP-98 auth expectations
+
+When any of those change:
+
+- update Flight Deck and Yoke in the same pass
+- update `src/openapi.ts`
+- update `src/types.ts`
+- update or add tests that lock the new behavior
+
+## Design rules
+
+- Keep Tower schema-light for records. App meaning belongs in client translators.
+- Use stable group UUIDs for durable ACL and membership logic.
+- Treat `group_npub` as rotating crypto/write-proof identity, not the only durable group key.
+- Keep workspace, group, and storage boundaries explicit. Do not infer across them implicitly.
+- Public storage access must remain opt-in and explicit.
+- Any new route should have an OpenAPI entry unless there is a strong reason not to.
+
+## Where to look for common tasks
+
+- add a new endpoint:
+  - route in `src/routes/`
+  - service logic in `src/services/`
+  - types in `src/types.ts`
+  - OpenAPI in `src/openapi.ts`
+  - tests in `tests/`
+- change DB shape:
+  - `src/schema/001_init.sql`
+  - `src/schema/ensure-runtime-schema.ts`
+  - `src/schema/run-migrations.ts` if needed
+- change auth behavior:
+  - `src/auth.ts`
+  - affected route tests
+
+## Things to avoid
+
+- Do not put Flight Deck-specific local row shapes into Tower responses unless they are part of the shared contract.
+- Do not make Flight Logs mandatory for normal workspace operations.
+- Do not change field names across routes casually; Flight Deck and Yoke depend on stable naming.
+- Do not add client-only convenience semantics to storage or record services without updating both clients.
+
+## Validation
+
+- `set -a; . ./.env.example; set +a; bun test`
+
+For local authenticated integration tests, use the shared identity in `../tmp/nsec.md`.
