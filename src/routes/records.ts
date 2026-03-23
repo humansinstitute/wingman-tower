@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { syncRecords, fetchRecords, fetchRecordsSummary, heartbeatCheck } from '../services/records';
+import { syncRecords, fetchRecords, fetchRecordsSummary, fetchRecordHistory, heartbeatCheck } from '../services/records';
 import { getCurrentGroupEpoch, getGroupByCurrentNpub } from '../services/groups';
 import { requireNip98Auth, verifyNip98AuthHeader } from '../auth';
 import type { FetchRecordsInput, FetchRecordsSummaryInput, HeartbeatRequestBody, SyncRequestBody } from '../types';
@@ -93,6 +93,30 @@ recordsRouter.post('/heartbeat', async (c) => {
     return c.json(result);
   } catch (error) {
     return c.json({ error: error instanceof Error ? error.message : 'Heartbeat failed' }, 500);
+  }
+});
+
+// GET /api/v4/records/:record_id/history?owner_npub=<npub>&viewer_npub=<npub>
+recordsRouter.get('/:record_id/history', async (c) => {
+  const authNpub = await requireNip98Auth(c);
+  if (authNpub instanceof Response) return authNpub;
+
+  const recordId = c.req.param('record_id');
+  const ownerNpub = c.req.query('owner_npub');
+  const viewerNpub = c.req.query('viewer_npub');
+
+  if (!ownerNpub) {
+    return c.json({ error: 'owner_npub query param required' }, 400);
+  }
+  if (viewerNpub && viewerNpub !== authNpub) {
+    return c.json({ error: 'viewer_npub must match authenticated npub' }, 403);
+  }
+
+  try {
+    const versions = await fetchRecordHistory(recordId, ownerNpub, viewerNpub || authNpub);
+    return c.json({ versions });
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : 'Failed to fetch record history' }, 500);
   }
 });
 

@@ -460,6 +460,83 @@ export async function fetchRecords(
 }
 
 /**
+ * Fetch all versions of a single record, ordered newest-first.
+ * Access is granted if the viewer is the owner or has group access to at least one version.
+ */
+export async function fetchRecordHistory(
+  recordId: string,
+  ownerNpub: string,
+  viewerNpub: string,
+): Promise<RecordResponse[]> {
+  const sql = getDb();
+
+  // Fetch all versions of this record
+  const rows = await sql<V4Record[]>`
+    SELECT * FROM v4_records
+    WHERE record_id = ${recordId}
+      AND owner_npub = ${ownerNpub}
+    ORDER BY version DESC
+  `;
+
+  if (rows.length === 0) return [];
+
+  // Access check: viewer must be owner or have group access to at least one version
+  if (viewerNpub !== ownerNpub) {
+    const rowIds = rows.map((r) => r.id);
+    const accessCheck = await sql<{ cnt: string }[]>`
+      SELECT COUNT(*)::text AS cnt
+      FROM v4_record_group_payloads rgp
+      LEFT JOIN v4_group_member_keys gmk
+        ON gmk.group_id = rgp.group_id
+       AND gmk.key_version = rgp.group_epoch
+       AND gmk.member_npub = ${viewerNpub}
+       AND gmk.revoked_at IS NULL
+      LEFT JOIN v4_groups g
+        ON g.group_npub = rgp.group_npub
+      LEFT JOIN v4_group_members gm
+        ON gm.group_id = g.id
+       AND gm.member_npub = ${viewerNpub}
+      WHERE rgp.record_row_id IN ${sql(rowIds)}
+        AND (gmk.id IS NOT NULL OR (rgp.group_id IS NULL AND gm.id IS NOT NULL))
+    `;
+    if (parseInt(accessCheck[0].cnt, 10) === 0) return [];
+  }
+
+  // Batch-fetch group payloads
+  const rowIds = rows.map((r) => r.id);
+  const allPayloads = await sql<V4RecordGroupPayload[]>`
+    SELECT * FROM v4_record_group_payloads WHERE record_row_id IN ${sql(rowIds)}
+  `;
+  const payloadsByRowId = new Map<string, V4RecordGroupPayload[]>();
+  for (const p of allPayloads) {
+    const existing = payloadsByRowId.get(p.record_row_id);
+    if (existing) existing.push(p);
+    else payloadsByRowId.set(p.record_row_id, [p]);
+  }
+
+  return rows.map((row) => {
+    const payloads = payloadsByRowId.get(row.id) || [];
+    return {
+      record_id: row.record_id,
+      owner_npub: row.owner_npub,
+      record_family_hash: row.record_family_hash,
+      version: row.version,
+      previous_version: row.previous_version,
+      signature_npub: row.signature_npub,
+      owner_payload: { ciphertext: row.owner_ciphertext },
+      group_payloads: payloads.map((p) => ({
+        group_id: p.group_id ?? undefined,
+        group_epoch: p.group_epoch ?? undefined,
+        group_npub: p.group_npub,
+        ciphertext: p.ciphertext,
+        write: p.can_write,
+      })),
+      updated_at: row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at),
+    };
+  });
+}
+
+/**
  * Fetch a per-family summary of latest visible records.
  */
 export async function fetchRecordsSummary(
