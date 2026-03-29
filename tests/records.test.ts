@@ -493,6 +493,82 @@ describe('Records API', () => {
     expect(memberFetchBody.records.map((record: any) => record.record_id)).not.toContain('epoch-shared-v2');
   });
 
+  test('GET /api/v4/records - records with unresolved group_id are not visible to members via fallback path', async () => {
+    // Directly insert a record with group_id=NULL but group_npub matching a group
+    // to simulate the fallback visibility path (Path 2) that was removed.
+    // This record should NOT be visible to non-owner members.
+    const UNRESOLVED_FAMILY = 'unresolved_group_family';
+
+    // Create a group with MEMBER
+    const createGroupPayload = {
+      owner_npub: OWNER,
+      name: 'Unresolved test group',
+      group_npub: 'npub1unresolved_test_group',
+      member_keys: [
+        {
+          member_npub: OWNER,
+          wrapped_group_nsec: 'unresolved_owner_key',
+          wrapped_by_npub: OWNER,
+        },
+        {
+          member_npub: MEMBER,
+          wrapped_group_nsec: 'unresolved_member_key',
+          wrapped_by_npub: OWNER,
+        },
+      ],
+    };
+    const groupRes = await app.request('/api/v4/groups', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: authHeader('/api/v4/groups', 'POST', ownerSecret, createGroupPayload),
+      },
+      body: JSON.stringify(createGroupPayload),
+    });
+    expect(groupRes.status).toBe(201);
+    const groupBody = await groupRes.json();
+
+    // Sync a record with only group_npub (no group_id) using a DIFFERENT npub
+    // that happens to match no epoch, forcing group_id to stay NULL in the stored payload.
+    // We do this by directly inserting into the DB to simulate the edge case.
+    const recordId = 'unresolved-group-record';
+    await sql`
+      INSERT INTO v4_records (record_id, owner_npub, record_family_hash, version, previous_version, signature_npub, owner_ciphertext)
+      VALUES (${recordId}, ${OWNER}, ${UNRESOLVED_FAMILY}, 1, 0, ${OWNER}, 'unresolved_payload')
+    `;
+    const [insertedRecord] = await sql<{ id: string }[]>`
+      SELECT id FROM v4_records WHERE record_id = ${recordId}
+    `;
+    // Insert a group payload with group_id=NULL but matching group_npub
+    await sql`
+      INSERT INTO v4_record_group_payloads (record_row_id, group_id, group_epoch, group_npub, ciphertext, can_write)
+      VALUES (${insertedRecord.id}, NULL, NULL, ${'npub1unresolved_test_group'}, 'unresolved_group_ciphertext', TRUE)
+    `;
+
+    // Member should NOT see this record (the old Path 2 fallback would have let them)
+    const memberFetchPath = `/api/v4/records?owner_npub=${OWNER}&viewer_npub=${MEMBER}&record_family_hash=${UNRESOLVED_FAMILY}`;
+    const memberFetchRes = await app.request(memberFetchPath, {
+      headers: {
+        Authorization: authHeader(memberFetchPath, 'GET', memberSecret),
+      },
+    });
+    expect(memberFetchRes.status).toBe(200);
+    const memberFetchBody = await memberFetchRes.json();
+    expect(memberFetchBody.records).toHaveLength(0);
+
+    // Owner should still see it
+    const ownerFetchPath = `/api/v4/records?owner_npub=${OWNER}&record_family_hash=${UNRESOLVED_FAMILY}`;
+    const ownerFetchRes = await app.request(ownerFetchPath, {
+      headers: {
+        Authorization: authHeader(ownerFetchPath, 'GET', ownerSecret),
+      },
+    });
+    expect(ownerFetchRes.status).toBe(200);
+    const ownerFetchBody = await ownerFetchRes.json();
+    expect(ownerFetchBody.records).toHaveLength(1);
+    expect(ownerFetchBody.records[0].record_id).toBe(recordId);
+  });
+
   test('GET /api/v4/records - requires owner_npub and record_family_hash', async () => {
     const res1 = await app.request('/api/v4/records', {
       headers: {

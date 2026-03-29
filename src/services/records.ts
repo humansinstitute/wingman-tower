@@ -286,21 +286,12 @@ export async function fetchRecords(
       OR EXISTS (
         SELECT 1
         FROM v4_record_group_payloads rgp
-        LEFT JOIN v4_group_member_keys gmk
+        JOIN v4_group_member_keys gmk
           ON gmk.group_id = rgp.group_id
          AND gmk.key_version = rgp.group_epoch
          AND gmk.member_npub = ${viewerNpub}
          AND gmk.revoked_at IS NULL
-        LEFT JOIN v4_groups g
-          ON g.group_npub = rgp.group_npub
-        LEFT JOIN v4_group_members gm
-          ON gm.group_id = g.id
-         AND gm.member_npub = ${viewerNpub}
         WHERE rgp.record_row_id = latest_records.id
-          AND (
-            gmk.id IS NOT NULL
-            OR (rgp.group_id IS NULL AND gm.id IS NOT NULL)
-          )
       )
     `;
     total = parseInt(countRow.count, 10);
@@ -320,21 +311,12 @@ export async function fetchRecords(
         OR EXISTS (
           SELECT 1
           FROM v4_record_group_payloads rgp
-          LEFT JOIN v4_group_member_keys gmk
+          JOIN v4_group_member_keys gmk
             ON gmk.group_id = rgp.group_id
            AND gmk.key_version = rgp.group_epoch
            AND gmk.member_npub = ${viewerNpub}
            AND gmk.revoked_at IS NULL
-          LEFT JOIN v4_groups g
-            ON g.group_npub = rgp.group_npub
-          LEFT JOIN v4_group_members gm
-            ON gm.group_id = g.id
-           AND gm.member_npub = ${viewerNpub}
           WHERE rgp.record_row_id = latest_records.id
-            AND (
-              gmk.id IS NOT NULL
-              OR (rgp.group_id IS NULL AND gm.id IS NOT NULL)
-            )
         )
       ORDER BY latest_records.updated_at ASC
       LIMIT ${limit} OFFSET ${offset}
@@ -355,21 +337,12 @@ export async function fetchRecords(
       OR EXISTS (
         SELECT 1
         FROM v4_record_group_payloads rgp
-        LEFT JOIN v4_group_member_keys gmk
+        JOIN v4_group_member_keys gmk
           ON gmk.group_id = rgp.group_id
          AND gmk.key_version = rgp.group_epoch
          AND gmk.member_npub = ${viewerNpub}
          AND gmk.revoked_at IS NULL
-        LEFT JOIN v4_groups g
-          ON g.group_npub = rgp.group_npub
-        LEFT JOIN v4_group_members gm
-          ON gm.group_id = g.id
-         AND gm.member_npub = ${viewerNpub}
         WHERE rgp.record_row_id = latest_records.id
-          AND (
-            gmk.id IS NOT NULL
-            OR (rgp.group_id IS NULL AND gm.id IS NOT NULL)
-          )
       )
     `;
     total = parseInt(countRow.count, 10);
@@ -388,21 +361,12 @@ export async function fetchRecords(
         OR EXISTS (
           SELECT 1
           FROM v4_record_group_payloads rgp
-          LEFT JOIN v4_group_member_keys gmk
+          JOIN v4_group_member_keys gmk
             ON gmk.group_id = rgp.group_id
            AND gmk.key_version = rgp.group_epoch
            AND gmk.member_npub = ${viewerNpub}
            AND gmk.revoked_at IS NULL
-          LEFT JOIN v4_groups g
-            ON g.group_npub = rgp.group_npub
-          LEFT JOIN v4_group_members gm
-            ON gm.group_id = g.id
-           AND gm.member_npub = ${viewerNpub}
           WHERE rgp.record_row_id = latest_records.id
-            AND (
-              gmk.id IS NOT NULL
-              OR (rgp.group_id IS NULL AND gm.id IS NOT NULL)
-            )
         )
       ORDER BY latest_records.updated_at ASC
       LIMIT ${limit} OFFSET ${offset}
@@ -486,18 +450,12 @@ export async function fetchRecordHistory(
     const accessCheck = await sql<{ cnt: string }[]>`
       SELECT COUNT(*)::text AS cnt
       FROM v4_record_group_payloads rgp
-      LEFT JOIN v4_group_member_keys gmk
+      JOIN v4_group_member_keys gmk
         ON gmk.group_id = rgp.group_id
        AND gmk.key_version = rgp.group_epoch
        AND gmk.member_npub = ${viewerNpub}
        AND gmk.revoked_at IS NULL
-      LEFT JOIN v4_groups g
-        ON g.group_npub = rgp.group_npub
-      LEFT JOIN v4_group_members gm
-        ON gm.group_id = g.id
-       AND gm.member_npub = ${viewerNpub}
       WHERE rgp.record_row_id IN ${sql(rowIds)}
-        AND (gmk.id IS NOT NULL OR (rgp.group_id IS NULL AND gm.id IS NOT NULL))
     `;
     if (parseInt(accessCheck[0].cnt, 10) === 0) return [];
   }
@@ -576,21 +534,12 @@ export async function fetchRecordsSummary(
           OR EXISTS (
             SELECT 1
             FROM v4_record_group_payloads rgp
-            LEFT JOIN v4_group_member_keys gmk
+            JOIN v4_group_member_keys gmk
               ON gmk.group_id = rgp.group_id
              AND gmk.key_version = rgp.group_epoch
              AND gmk.member_npub = ${viewerNpub}
              AND gmk.revoked_at IS NULL
-            LEFT JOIN v4_groups g
-              ON g.group_npub = rgp.group_npub
-            LEFT JOIN v4_group_members gm
-              ON gm.group_id = g.id
-             AND gm.member_npub = ${viewerNpub}
             WHERE rgp.record_row_id = lr.id
-              AND (
-                gmk.id IS NOT NULL
-                OR (rgp.group_id IS NULL AND gm.id IS NOT NULL)
-              )
           )
         )
         SELECT
@@ -615,21 +564,12 @@ export async function fetchRecordsSummary(
           OR EXISTS (
             SELECT 1
             FROM v4_record_group_payloads rgp
-            LEFT JOIN v4_group_member_keys gmk
+            JOIN v4_group_member_keys gmk
               ON gmk.group_id = rgp.group_id
              AND gmk.key_version = rgp.group_epoch
              AND gmk.member_npub = ${viewerNpub}
              AND gmk.revoked_at IS NULL
-            LEFT JOIN v4_groups g
-              ON g.group_npub = rgp.group_npub
-            LEFT JOIN v4_group_members gm
-              ON gm.group_id = g.id
-             AND gm.member_npub = ${viewerNpub}
             WHERE rgp.record_row_id = lr.id
-              AND (
-                gmk.id IS NOT NULL
-                OR (rgp.group_id IS NULL AND gm.id IS NOT NULL)
-              )
           )
         )
         SELECT
@@ -665,21 +605,12 @@ export async function fetchRecordsSummary(
         OR EXISTS (
           SELECT 1
           FROM v4_record_group_payloads rgp
-          LEFT JOIN v4_group_member_keys gmk
+          JOIN v4_group_member_keys gmk
             ON gmk.group_id = rgp.group_id
            AND gmk.key_version = rgp.group_epoch
            AND gmk.member_npub = ${viewerNpub}
            AND gmk.revoked_at IS NULL
-          LEFT JOIN v4_groups g
-            ON g.group_npub = rgp.group_npub
-          LEFT JOIN v4_group_members gm
-            ON gm.group_id = g.id
-           AND gm.member_npub = ${viewerNpub}
           WHERE rgp.record_row_id = lr.id
-            AND (
-              gmk.id IS NOT NULL
-              OR (rgp.group_id IS NULL AND gm.id IS NOT NULL)
-            )
         )
       )
       SELECT
@@ -703,21 +634,12 @@ export async function fetchRecordsSummary(
         OR EXISTS (
           SELECT 1
           FROM v4_record_group_payloads rgp
-          LEFT JOIN v4_group_member_keys gmk
+          JOIN v4_group_member_keys gmk
             ON gmk.group_id = rgp.group_id
            AND gmk.key_version = rgp.group_epoch
            AND gmk.member_npub = ${viewerNpub}
            AND gmk.revoked_at IS NULL
-          LEFT JOIN v4_groups g
-            ON g.group_npub = rgp.group_npub
-          LEFT JOIN v4_group_members gm
-            ON gm.group_id = g.id
-           AND gm.member_npub = ${viewerNpub}
           WHERE rgp.record_row_id = lr.id
-            AND (
-              gmk.id IS NOT NULL
-              OR (rgp.group_id IS NULL AND gm.id IS NOT NULL)
-            )
         )
       )
       SELECT
