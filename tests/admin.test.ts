@@ -41,6 +41,9 @@ describe('Admin table viewer', () => {
     const html = await res.text();
     expect(html).toContain('Table Viewer');
     expect(html).toContain('Connection Tokens');
+    expect(html).toContain('Danger Zone');
+    expect(html).toContain('WIPE V4 DATA');
+    expect(html).toContain('/api/v4/admin/reset-database');
     expect(html).toContain('/api/v4/admin/tables');
     expect(html).toContain('Connect with Nostr');
   });
@@ -66,5 +69,37 @@ describe('Admin table viewer', () => {
 
     const body = await res.json();
     expect(body.error).toBe('admin npub required');
+  });
+
+  test('POST /api/v4/admin/reset-database requires auth', async () => {
+    const res = await app.request('/api/v4/admin/reset-database', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ confirmation: 'WIPE V4 DATA' }),
+    });
+    expect(res.status).toBe(401);
+
+    const body = await res.json();
+    expect(body.error).toBe('nip98 auth required');
+  });
+
+  test('POST /api/v4/admin/reset-database rejects non-admin npub', async () => {
+    const path = '/api/v4/admin/reset-database';
+    const body = { confirmation: 'WIPE V4 DATA' };
+    const res = await app.request(path, {
+      method: 'POST',
+      headers: {
+        Authorization: authHeader(path, 'POST', outsiderSecret, body),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+
+    expect(res.status).toBe(403);
+
+    const payload = await res.json();
+    expect(payload.error).toBe('admin npub required');
   });
 });

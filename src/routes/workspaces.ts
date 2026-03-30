@@ -53,12 +53,14 @@ workspacesRouter.post('/', async (c) => {
     const result = await createWorkspace(body, authNpub);
     return c.json({
       workspace_id: result.workspace.id,
+      workspace_npub: result.workspace.workspace_owner_npub,
       workspace_owner_npub: result.workspace.workspace_owner_npub,
       creator_npub: result.workspace.creator_npub,
       name: result.workspace.name,
       description: result.workspace.description,
       avatar_url: result.workspace.avatar_url,
       direct_https_url: config.directHttpsUrl,
+      service_npub: config.service.npub || null,
       default_group_id: result.defaultGroup.id,
       default_group_npub: result.defaultGroup.group_npub,
       private_group_id: result.privateGroup.id,
@@ -93,7 +95,9 @@ workspacesRouter.get('/', async (c) => {
     return c.json({
       workspaces: workspaces.map((workspace) => ({
         ...workspace,
+        workspace_npub: workspace.workspace_owner_npub,
         direct_https_url: config.directHttpsUrl,
+        service_npub: config.service.npub || null,
       })),
     });
   } catch (error) {
@@ -134,10 +138,12 @@ workspacesRouter.post('/recover', async (c) => {
     return c.json({
       ...(entry || {}),
       workspace_id: workspace.id,
+      workspace_npub: workspace.workspace_owner_npub,
       workspace_owner_npub: workspace.workspace_owner_npub,
       creator_npub: workspace.creator_npub,
       name: workspace.name,
       direct_https_url: config.directHttpsUrl,
+      service_npub: config.service.npub || null,
       wrapped_workspace_nsec: workspace.wrapped_workspace_nsec,
       wrapped_by_npub: workspace.wrapped_by_npub,
       created_at: workspace.created_at,
@@ -203,7 +209,9 @@ workspacesRouter.patch('/:workspaceOwnerNpub', async (c) => {
 
     return c.json({
       ...workspace,
+      workspace_npub: workspace.workspace_owner_npub,
       direct_https_url: config.directHttpsUrl,
+      service_npub: config.service.npub || null,
     });
   } catch (error) {
     return c.json({ error: error instanceof Error ? error.message : 'Failed to update workspace' }, 500);

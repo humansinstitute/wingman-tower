@@ -15,6 +15,15 @@ For the current Wingman Be Free workflow:
 
 The portable Docker bundle for Tower is backend-only: Tower, Postgres, and MinIO. Flight Deck stays outside this stack.
 
+## Protocol Docs
+
+The current Superbased V4 protocol drafts live in:
+
+- `SBIPS/`
+
+These proposals formalize the implemented Tower contract for auth, workspaces,
+groups, record sync, storage, and connection/bootstrap packaging.
+
 ## Production
 
 Production deployment notes and the Docker Compose stack live in:

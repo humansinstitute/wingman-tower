@@ -72,6 +72,20 @@ function tableViewerHtml(apiBaseUrl: string) {
         padding: 0.5rem 0.75rem;
       }
       .connect { border-radius: 999px; cursor: pointer; }
+      .danger-btn {
+        border-color: #f0b7b7;
+        background: #fff1f1;
+        color: var(--danger);
+      }
+      .warning {
+        margin-top: 0.6rem;
+        padding: 0.75rem;
+        border-radius: 12px;
+        border: 1px solid #f0b7b7;
+        background: #fff4f4;
+        color: #7f1d1d;
+        font-size: 0.84rem;
+      }
       .table-list { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 1rem; }
       .panel {
         border: 1px solid var(--line);
@@ -121,10 +135,22 @@ function tableViewerHtml(apiBaseUrl: string) {
     <div class="viewer">
       <aside class="sidebar">
         <h1>Table Viewer</h1>
-        <p class="lede">Read-only spot checks over live SuperBased v4 backend tables.</p>
+        <p class="lede">Admin inspection tools for live SuperBased v4 backend tables.</p>
         <button id="connect" class="connect" type="button">Connect with Nostr</button>
         <div id="status" class="status">Not connected</div>
         <div class="stack">
+          <div class="panel">
+            <h2>Danger Zone</h2>
+            <div class="meta">Reset the Tower V4 database tables on this service. This clears SQL rows only. It does not delete object storage blobs or restart the service.</div>
+            <div class="field">
+              <label for="resetConfirmationInput" class="meta">Type <code>WIPE V4 DATA</code> to enable reset</label>
+              <input id="resetConfirmationInput" type="text" placeholder="WIPE V4 DATA" />
+            </div>
+            <div class="actions">
+              <button id="resetDatabaseBtn" class="connect danger-btn" type="button">Wipe V4 Data</button>
+            </div>
+            <div class="warning">Use this only when you intentionally want a clean Tower database and plan to re-bootstrap workspaces from scratch.</div>
+          </div>
           <div class="panel">
             <h2>Connection Tokens</h2>
             <div class="meta">Generate a Yoke/Agent Connect token for a workspace and app namespace.</div>
@@ -189,6 +215,8 @@ function tableViewerHtml(apiBaseUrl: string) {
       const generateTokenBtn = document.getElementById('generateTokenBtn');
       const copyTokenBtn = document.getElementById('copyTokenBtn');
       const tokenOutput = document.getElementById('tokenOutput');
+      const resetConfirmationInput = document.getElementById('resetConfirmationInput');
+      const resetDatabaseBtn = document.getElementById('resetDatabaseBtn');
 
       function setStatus(message, isError = false) {
         statusEl.textContent = message;
@@ -249,6 +277,22 @@ function tableViewerHtml(apiBaseUrl: string) {
         const url = API_BASE + path;
         const auth = await signAuth(url, 'GET');
         const res = await fetch(url, { headers: { Authorization: auth } });
+        if (!res.ok) throw new Error(await res.text());
+        return res.json();
+      }
+
+      async function apiPost(path, body) {
+        const url = API_BASE + path;
+        const payload = JSON.stringify(body || {});
+        const auth = await signAuth(url, 'POST', payload);
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            Authorization: auth,
+            'Content-Type': 'application/json',
+          },
+          body: payload,
+        });
         if (!res.ok) throw new Error(await res.text());
         return res.json();
       }
@@ -331,6 +375,26 @@ function tableViewerHtml(apiBaseUrl: string) {
         setStatus('Connected as ' + (state.npub || payload.viewer));
       }
 
+      async function resetDatabase() {
+        const confirmation = String(resetConfirmationInput.value || '').trim();
+        if (confirmation !== 'WIPE V4 DATA') {
+          throw new Error('Type WIPE V4 DATA exactly before resetting');
+        }
+        const confirmed = window.confirm('This will delete all Tower V4 rows on this service. Continue?');
+        if (!confirmed) return;
+        setStatus('Resetting V4 database tables…');
+        const payload = await apiPost('/api/v4/admin/reset-database', {
+          confirmation,
+        });
+        tokenOutput.value = '';
+        state.offset = 0;
+        await loadTables();
+        setStatus(
+          'Reset completed on ' + (state.npub || payload.viewer) + '. '
+          + 'Tower rows are empty; restart/re-bootstrap services separately.',
+        );
+      }
+
       async function loadTable() {
         if (!state.activeTable) return;
         setStatus('Loading ' + state.activeTable + '…');
@@ -350,6 +414,7 @@ function tableViewerHtml(apiBaseUrl: string) {
           setStatus((error && error.message) || 'Failed to copy token', true);
         }
       });
+      resetDatabaseBtn.addEventListener('click', () => resetDatabase().catch((error) => setStatus(error.message || 'Failed to reset database', true)));
       limitSelect.addEventListener('change', () => {
         state.limit = Number.parseInt(limitSelect.value, 10) || 100;
         state.offset = 0;

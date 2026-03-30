@@ -18,6 +18,7 @@ const VIEWER_TABLES = [
 ] as const;
 
 type ViewerTableName = (typeof VIEWER_TABLES)[number];
+const RESET_CONFIRMATION = 'WIPE V4 DATA';
 
 function isViewerTableName(value: string): value is ViewerTableName {
   return VIEWER_TABLES.includes(value as ViewerTableName);
@@ -63,6 +64,17 @@ function requireAdminNpub(authNpub: string) {
     });
   }
   return null;
+}
+
+async function collectViewerTableCounts(sqlLike: ReturnType<typeof getDb>) {
+  const counts: Record<ViewerTableName, number> = {} as Record<ViewerTableName, number>;
+  for (const tableName of VIEWER_TABLES) {
+    const [countRow] = await sqlLike.unsafe<{ count: string }[]>(
+      `SELECT COUNT(*)::text AS count FROM ${tableName}`,
+    );
+    counts[tableName] = Number.parseInt(countRow?.count || '0', 10);
+  }
+  return counts;
 }
 
 adminRouter.get('/tables', async (c) => {
@@ -254,5 +266,38 @@ adminRouter.get('/workspaces/:workspaceId/connection-token', async (c) => {
     service_npub: config.service.npub || null,
     connection_token: connectionToken,
     agent_connect_package: agentConnectPackage,
+  });
+});
+
+adminRouter.post('/reset-database', async (c) => {
+  const authNpub = await requireNip98Auth(c);
+  if (authNpub instanceof Response) return authNpub;
+  const adminError = requireAdminNpub(authNpub);
+  if (adminError) return adminError;
+
+  const body = await c.req.json<{ confirmation?: string }>().catch(() => null);
+  const confirmation = String(body?.confirmation || '').trim();
+  if (confirmation !== RESET_CONFIRMATION) {
+    return c.json({
+      error: `confirmation must equal "${RESET_CONFIRMATION}"`,
+    }, 400);
+  }
+
+  const sql = getDb();
+  const before = await collectViewerTableCounts(sql);
+  await sql.begin(async (tx) => {
+    await tx.unsafe(
+      `TRUNCATE TABLE ${VIEWER_TABLES.join(', ')} RESTART IDENTITY CASCADE`,
+    );
+  });
+  const after = await collectViewerTableCounts(sql);
+
+  return c.json({
+    viewer: authNpub,
+    confirmation_required: RESET_CONFIRMATION,
+    reset_tables: [...VIEWER_TABLES],
+    before,
+    after,
+    note: 'Tower database rows were deleted. Storage blobs were not removed from object storage.',
   });
 });
