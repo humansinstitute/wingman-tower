@@ -96,12 +96,19 @@ The new member set is authoritative for current membership.
 
 ### Historical Access Semantics
 
-Historical record access SHOULD be tied to `group_id + epoch`.
+Historical record access MUST be tied to `group_id + epoch`.
 
-This enables the following current behavior:
+This enforces the following behavior:
 
-- members removed in a later epoch can still read records shared to an older
-  epoch if they retain a non-revoked wrapped key for that older epoch
+- members removed via epoch rotation (excluded from `member_keys`) can still
+  read records shared to an older epoch if they retain a non-revoked wrapped
+  key for that older epoch
+- members removed via explicit `removeGroupMember` have all wrapped keys
+  revoked and lose access to all epochs
+- newly added members receive a wrapped key at the current epoch only and
+  MUST NOT automatically gain access to records encrypted to prior epochs
+- to grant a new member access to historical content, the owner MUST reauthor
+  the record with a new version carrying a `group_payload` at the current epoch
 - they do not automatically gain access to records shared only to the new epoch
 
 ### Authorization
@@ -145,3 +152,4 @@ Reference files:
 - `src/services/groups.ts`
 - `tests/groups.test.ts`
 - `tests/records.test.ts`
+- `tests/historical-epoch-access.test.ts`
