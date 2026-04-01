@@ -1,7 +1,11 @@
 /**
- * SSE stream endpoint for real-time record/group change notifications.
+ * SSE stream endpoint for advisory record/group change notifications.
  *
  * GET /api/v4/workspaces/:ownerNpub/stream?token=<base64>&last_event_id=<cursor>
+ *
+ * Events are advisory: they tell clients what to refresh, but do not carry
+ * encrypted record content or grant read access. Visibility is enforced when
+ * clients pull via GET /api/v4/records, not at SSE emission time.
  *
  * Auth: NIP-98 token passed as query param (signed by workspace session key).
  * The token is validated once on connect; the stream stays open without re-auth.

@@ -11,6 +11,7 @@ It owns:
 - workspace creation, listing, and recovery
 - group creation, membership, wrapped keys, and epoch rotation
 - record sync, fetch, and visibility rules
+- SSE real-time change notifications to connected clients
 - storage prepare/upload/complete/read metadata
 - service identity, NIP-98 auth, and OpenAPI output
 - schema and runtime migrations
@@ -33,11 +34,13 @@ It does not own:
 
 ## Code map
 
-- `src/server.ts`: assembles the Hono app
+- `src/server.ts`: assembles the Hono app and registers routes
 - `src/routes/`: route handlers by domain
+- `src/routes/stream.ts`: SSE stream endpoint for real-time change notifications
 - `src/services/`: business logic and DB-facing behavior
+- `src/sse-hub.ts`: in-memory SSE fan-out hub with size-based ring buffer for replay
 - `src/schema/`: bootstrap SQL, runtime schema checks, migrations, replay tools
-- `src/auth.ts`: NIP-98 verification
+- `src/auth.ts`: NIP-98 verification and workspace session key resolution
 - `src/service-identity.ts`, `src/identity.ts`: service identity helpers
 - `src/config.ts`: env-driven runtime config
 - `tests/`: contract and behavior coverage
@@ -50,6 +53,7 @@ It does not own:
 - workspace APIs and defaults: `src/routes/workspaces.ts`, `src/services/workspaces.ts`
 - group APIs and rotation: `src/routes/groups.ts`, `src/services/groups.ts`
 - record sync/fetch/summary: `src/routes/records.ts`, `src/services/records.ts`
+- SSE real-time updates: `src/routes/stream.ts`, `src/sse-hub.ts`
 - storage ACLs and blob metadata: `src/routes/storage.ts`, `src/services/storage.ts`
 - admin and table viewer: `src/routes/admin.ts`, `src/admin-token.ts`
 
@@ -75,7 +79,7 @@ When any of those change:
 
 - Keep Tower schema-light for records. App meaning belongs in client translators.
 - Use stable group UUIDs for durable ACL and membership logic.
-- Treat `group_npub` as rotating crypto/write-proof identity, not the only durable group key.
+- Treat `group_npub` as rotating crypto identity (encryption, write proofs), not the durable group key.
 - Keep workspace, group, and storage boundaries explicit. Do not infer across them implicitly.
 - Public storage access must remain opt-in and explicit.
 - Any new route should have an OpenAPI entry unless there is a strong reason not to.
@@ -108,3 +112,15 @@ When any of those change:
 - `set -a; . ./.env.example; set +a; bun test`
 
 For local authenticated integration tests, use the shared identity in `../tmp/nsec.md`.
+
+## Deployment (dev)
+
+Tower runs locally via Docker Compose with `.env.prod`:
+
+```bash
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
+```
+
+Health check: `curl http://127.0.0.1:3100/health`
+
+This is a Bun runtime — no separate compile step. Docker builds from source directly.
