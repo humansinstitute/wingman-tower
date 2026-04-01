@@ -1,4 +1,5 @@
 import { getDb } from '../db';
+import { sseHub } from '../sse-hub';
 import type {
   FetchRecordsInput,
   FetchRecordsSummaryInput,
@@ -91,11 +92,15 @@ async function resolvePayloadGroup(sql: ReturnType<typeof getDb>, payload: Group
  * - New record (version=1, previous_version=0): insert if record_id doesn't exist
  * - Update (version=N, previous_version=N-1): insert only if latest version == previous_version
  * - Reject stale writes where previous_version doesn't match latest
+ *
+ * @param signerNpub - The NIP-98 signer (may be ws_key_npub or real npub)
+ * @param userNpub - The resolved real user identity (same as signerNpub for direct auth)
  */
 export async function syncRecords(
   ownerNpub: string,
   inputs: SyncRecordInput[],
-  authNpub: string,
+  signerNpub: string,
+  userNpub: string,
   authorizedWriteGroups: Set<string> = new Set(),
 ): Promise<SyncResult> {
   const sql = getDb();
@@ -109,8 +114,12 @@ export async function syncRecords(
       rejected.push({ record_id: rec.record_id, reason: 'owner_npub mismatch' });
       continue;
     }
-    if (rec.signature_npub !== authNpub) {
-      rejected.push({ record_id: rec.record_id, reason: 'signature_npub must match authenticated npub' });
+    // signature_npub must match the NIP-98 signer (which may be a ws_key_npub)
+    if (rec.signature_npub !== signerNpub) {
+      rejected.push({
+        record_id: rec.record_id,
+        reason: `signature_npub must match authenticated npub (record has ${rec.signature_npub}, signerNpub is ${signerNpub})`,
+      });
       continue;
     }
 
@@ -141,13 +150,14 @@ export async function syncRecords(
       continue;
     }
 
-    const isOwnerWrite = authNpub === ownerNpub;
+    // Use resolved userNpub for ownership and membership checks
+    const isOwnerWrite = userNpub === ownerNpub;
     if (!isOwnerWrite) {
       const writeGroup = await resolveWriteGroup(sql, rec);
       if (!writeGroup?.group_id) {
         rejected.push({
           record_id: rec.record_id,
-          reason: 'write_group_id or current write_group_npub required for non-owner writes',
+          reason: `write_group_id or current write_group_npub required for non-owner writes (signerNpub=${signerNpub}, userNpub=${userNpub}, write_group_id=${rec.write_group_id || ''}, write_group_npub=${rec.write_group_npub || ''})`,
         });
         continue;
       }
@@ -159,17 +169,18 @@ export async function syncRecords(
         continue;
       }
 
+      // Group membership is stored by real user npub
       const [membership] = await sql<{ ok: number }[]>`
         SELECT 1 as ok
         FROM v4_group_members gm
         WHERE gm.group_id = ${writeGroup.group_id}
-          AND gm.member_npub = ${authNpub}
+          AND gm.member_npub = ${userNpub}
         LIMIT 1
       `;
       if (!membership?.ok) {
         rejected.push({
           record_id: rec.record_id,
-          reason: `authenticated npub is not a current member of ${writeGroup.group_id}`,
+          reason: `authenticated userNpub ${userNpub} is not a current member of ${writeGroup.group_id}`,
         });
         continue;
       }
@@ -241,6 +252,19 @@ export async function syncRecords(
     } else {
       updated++;
     }
+
+    // Emit SSE notification for this record change
+    sseHub.emit(rec.owner_npub, {
+      event: 'record-changed',
+      data: {
+        family_hash: rec.record_family_hash,
+        record_id: rec.record_id,
+        version: rec.version,
+        signature_npub: rec.signature_npub,
+        updated_at: row.updated_at,
+        record_state: 'active',
+      },
+    });
   }
 
   return {
