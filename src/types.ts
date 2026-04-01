@@ -164,8 +164,57 @@ export interface CompleteStorageInput {
   size_bytes?: number | null;
 }
 
+// ---- User Profiles ----
+
+export interface UserProfile {
+  user_npub: string;
+  display_name: string | null;
+  avatar_url: string | null;
+  credit_balance: number;
+  created_at: Date;
+}
+
+// ---- User Workspace Keys ----
+
+export interface UserWorkspaceKey {
+  user_npub: string;
+  workspace_owner_npub: string;
+  ws_key_npub: string;
+  ws_key_epoch: number;
+  active: boolean;
+  registered_at: Date;
+}
+
+export interface RegisterWorkspaceKeyInput {
+  workspace_owner_npub: string;
+  ws_key_npub: string;
+}
+
+export interface RotateWorkspaceKeyInput {
+  workspace_owner_npub: string;
+  new_ws_key_npub: string;
+  old_ws_key_npub: string;
+}
+
+export interface WorkspaceKeyEntry {
+  workspace_owner_npub: string;
+  ws_key_npub: string;
+  ws_key_epoch: number;
+  active: boolean;
+}
+
 // ---- Records ----
 
+/**
+ * Encrypted group payload for a single record version.
+ * Each entry delivers the record content encrypted for a specific group epoch.
+ *
+ * - group_id: stable group UUID (preferred, resolved by Tower)
+ * - group_epoch: integer epoch of the group key used for encryption
+ * - group_npub: rotating Nostr pubkey of the group at that epoch
+ * - ciphertext: NIP-44 encrypted inner payload (opaque to Tower)
+ * - write: whether this group can update the record
+ */
 export interface GroupPayloadInput {
   group_id?: string;
   group_epoch?: number;
@@ -174,6 +223,21 @@ export interface GroupPayloadInput {
   write: boolean;
 }
 
+/**
+ * Inbound record for sync.
+ *
+ * - signature_npub: the NIP-98 signer — may be a workspace session key,
+ *   not necessarily the user's real npub. Tower resolves it to the real
+ *   user identity for ownership and membership checks.
+ * - write_group_id: stable UUID of the group authorizing a non-owner write
+ *   (preferred over write_group_npub).
+ * - write_group_npub: rotating npub of the write group (legacy, accepted
+ *   during migration but new code should prefer write_group_id).
+ * - owner_payload: encrypted by the workspace session key (or real user
+ *   key as fallback).
+ * - group_payloads: per-group encrypted delivery, each encrypted with the
+ *   group's current epoch key.
+ */
 export interface SyncRecordInput {
   record_id: string;
   owner_npub: string;
