@@ -44,6 +44,7 @@ The package MUST include:
 - `version = 4`
 - `generated_at`
 - `service.direct_https_url`
+- `service.service_npub`
 - `workspace.owner_npub`
 - `app.app_npub`
 - `connection_token`
@@ -53,11 +54,9 @@ The package MUST include:
 `connection_token` MUST be a valid SBIP-0008 token whose:
 
 - `direct_https_url` matches `service.direct_https_url`
+- `service_npub` matches `service.service_npub`
 - `workspace_owner_npub` matches `workspace.owner_npub`
 - `app_npub` matches `app.app_npub`
-
-If the package includes `service.service_npub`, the embedded token SHOULD carry
-the same `service_npub`.
 
 ### Relay Hints
 
@@ -79,8 +78,10 @@ It is not required for raw Superbased HTTP clients.
 ## Security Considerations
 
 - The package is configuration data, not an authorization artifact.
-- Consumers SHOULD validate consistency between the outer package and the inner
+- Consumers MUST validate consistency between the outer package and the inner
   connection token.
+- Consumers MUST treat `service.direct_https_url` as a bootstrap locator and
+  `service.service_npub` as the authoritative service identity.
 - If stronger authenticity is required, a future SBIP should define signed
   packaging.
 

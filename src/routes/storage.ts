@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { requireNip98Auth } from '../auth';
+import { requireNip98AuthResolved } from '../auth';
 import {
   canAccessStorageObject,
   completeStorageObject,
@@ -15,8 +15,9 @@ import type { CompleteStorageInput, PrepareStorageInput } from '../types';
 export const storageRouter = new Hono();
 
 storageRouter.post('/prepare', async (c) => {
-  const authNpub = await requireNip98Auth(c);
-  if (authNpub instanceof Response) return authNpub;
+  const auth = await requireNip98AuthResolved(c);
+  if (auth instanceof Response) return auth;
+  const authNpub = auth.userNpub;
 
   const body = await c.req.json<PrepareStorageInput>();
   if (!body?.owner_npub) return c.json({ error: 'owner_npub required' }, 400);
@@ -78,8 +79,9 @@ storageRouter.get('/:objectId', async (c) => {
     });
   }
 
-  const authNpub = await requireNip98Auth(c);
-  if (authNpub instanceof Response) return authNpub;
+  const auth = await requireNip98AuthResolved(c);
+  if (auth instanceof Response) return auth;
+  const authNpub = auth.userNpub;
 
   const row = await canAccessStorageObject(objectId, authNpub);
   if (!row) return c.json({ error: 'storage object not found or not readable by this npub' }, 404);
@@ -105,8 +107,9 @@ storageRouter.get('/:objectId', async (c) => {
 });
 
 storageRouter.put('/:objectId', async (c) => {
-  const authNpub = await requireNip98Auth(c);
-  if (authNpub instanceof Response) return authNpub;
+  const auth = await requireNip98AuthResolved(c);
+  if (auth instanceof Response) return auth;
+  const authNpub = auth.userNpub;
 
   const objectId = c.req.param('objectId');
   if (!objectId) return c.json({ error: 'objectId required' }, 400);
@@ -127,8 +130,9 @@ storageRouter.put('/:objectId', async (c) => {
 });
 
 storageRouter.post('/:objectId/complete', async (c) => {
-  const authNpub = await requireNip98Auth(c);
-  if (authNpub instanceof Response) return authNpub;
+  const auth = await requireNip98AuthResolved(c);
+  if (auth instanceof Response) return auth;
+  const authNpub = auth.userNpub;
 
   const objectId = c.req.param('objectId');
   if (!objectId) return c.json({ error: 'objectId required' }, 400);
@@ -166,8 +170,9 @@ storageRouter.get('/:objectId/download-url', async (c) => {
     });
   }
 
-  const authNpub = await requireNip98Auth(c);
-  if (authNpub instanceof Response) return authNpub;
+  const auth = await requireNip98AuthResolved(c);
+  if (auth instanceof Response) return auth;
+  const authNpub = auth.userNpub;
 
   const row = await canAccessStorageObject(objectId, authNpub);
   if (!row) return c.json({ error: 'storage object not found or not readable by this npub' }, 404);
@@ -201,8 +206,9 @@ storageRouter.get('/:objectId/content', async (c) => {
     });
   }
 
-  const authNpub = await requireNip98Auth(c);
-  if (authNpub instanceof Response) return authNpub;
+  const auth = await requireNip98AuthResolved(c);
+  if (auth instanceof Response) return auth;
+  const authNpub = auth.userNpub;
 
   const row = await canAccessStorageObject(objectId, authNpub);
   if (!row) return c.json({ error: 'storage object not found or not readable by this npub' }, 404);

@@ -1,4 +1,5 @@
 import { getDb } from '../db';
+import { resolveWsKeyNpub } from './user-workspace-keys';
 import type {
   CreateWorkspaceInput,
   UpdateWorkspaceInput,
@@ -69,6 +70,8 @@ export async function createWorkspace(
   workspace: V4Workspace;
   defaultGroup: V4Group;
   defaultGroupMembers: V4GroupMember[];
+  adminGroup: V4Group;
+  adminGroupMembers: V4GroupMember[];
   privateGroup: V4Group;
   privateGroupMembers: V4GroupMember[];
 }> {
@@ -106,6 +109,15 @@ export async function createWorkspace(
       approvedByNpub: creatorNpub,
     });
 
+    const { group: adminGroup, members: adminGroupMembers } = await insertGroup(tx, {
+      ownerNpub: input.workspace_owner_npub,
+      name: input.admin_group_name || 'Workspace Admins',
+      groupNpub: input.admin_group_npub,
+      groupKind: 'workspace_admin',
+      memberKeys: input.admin_group_member_keys,
+      approvedByNpub: creatorNpub,
+    });
+
     const ownerPrivateMember =
       input.private_group_member_keys.find((entry) => entry.member_npub === creatorNpub)?.member_npub
       || creatorNpub;
@@ -123,6 +135,7 @@ export async function createWorkspace(
     const [updatedWorkspace] = await tx<V4Workspace[]>`
       UPDATE v4_workspaces
       SET default_group_id = ${defaultGroup.id},
+          admin_group_id = ${adminGroup.id},
           updated_at = NOW()
       WHERE id = ${workspace.id}
       RETURNING *
@@ -132,6 +145,8 @@ export async function createWorkspace(
       workspace: updatedWorkspace,
       defaultGroup,
       defaultGroupMembers,
+      adminGroup,
+      adminGroupMembers,
       privateGroup,
       privateGroupMembers,
     };
@@ -150,9 +165,27 @@ export async function getWorkspaceCreator(workspaceOwnerNpub: string): Promise<s
 
 export async function canManageWorkspace(workspaceOwnerNpub: string, actorNpub: string): Promise<boolean> {
   if (!workspaceOwnerNpub || !actorNpub) return false;
-  if (workspaceOwnerNpub === actorNpub) return true;
-  const creator = await getWorkspaceCreator(workspaceOwnerNpub);
-  return creator === actorNpub;
+  // Resolve ws_key_npub → real user_npub if applicable
+  const resolvedNpub = await resolveWsKeyNpub(actorNpub) ?? actorNpub;
+  const sql = getDb();
+  const [workspace] = await sql<Pick<V4Workspace, 'creator_npub' | 'admin_group_id'>[]>`
+    SELECT creator_npub, admin_group_id
+    FROM v4_workspaces
+    WHERE workspace_owner_npub = ${workspaceOwnerNpub}
+    LIMIT 1
+  `;
+  if (!workspace) return false;
+  if (workspace.creator_npub === resolvedNpub) return true;
+  if (!workspace.admin_group_id) return false;
+
+  const [membership] = await sql<{ ok: number }[]>`
+    SELECT 1 AS ok
+    FROM v4_group_members
+    WHERE group_id = ${workspace.admin_group_id}
+      AND member_npub = ${resolvedNpub}
+    LIMIT 1
+  `;
+  return membership?.ok === 1;
 }
 
 export async function updateWorkspace(
@@ -234,8 +267,10 @@ export async function recoverWorkspace(
   return workspace;
 }
 
-export async function listWorkspacesForMember(memberNpub: string): Promise<WorkspaceListEntry[]> {
+export async function listWorkspacesForMember(memberNpub: string, resolveKey = false): Promise<WorkspaceListEntry[]> {
   const sql = getDb();
+  // If the caller might be using a ws_key_npub, resolve to real identity
+  const effectiveNpub = resolveKey ? (await resolveWsKeyNpub(memberNpub) ?? memberNpub) : memberNpub;
 
   const workspaces = await sql<WorkspaceListEntry[]>`
     SELECT DISTINCT
@@ -247,25 +282,29 @@ export async function listWorkspacesForMember(memberNpub: string): Promise<Works
       w.avatar_url,
       w.default_group_id,
       dg.group_npub AS default_group_npub,
+      w.admin_group_id,
+      ag.group_npub AS admin_group_npub,
       pg.id AS private_group_id,
       pg.group_npub AS private_group_npub,
-      CASE WHEN w.creator_npub = ${memberNpub} THEN w.wrapped_workspace_nsec ELSE NULL END AS wrapped_workspace_nsec,
-      CASE WHEN w.creator_npub = ${memberNpub} THEN w.wrapped_by_npub ELSE NULL END AS wrapped_by_npub,
+      CASE WHEN w.creator_npub = ${effectiveNpub} THEN w.wrapped_workspace_nsec ELSE NULL END AS wrapped_workspace_nsec,
+      CASE WHEN w.creator_npub = ${effectiveNpub} THEN w.wrapped_by_npub ELSE NULL END AS wrapped_by_npub,
       w.created_at,
       w.updated_at
     FROM v4_workspaces w
     LEFT JOIN v4_groups dg
       ON dg.id = w.default_group_id
+    LEFT JOIN v4_groups ag
+      ON ag.id = w.admin_group_id
     LEFT JOIN v4_groups pg
       ON pg.owner_npub = w.workspace_owner_npub
      AND pg.group_kind = 'private'
-     AND pg.private_member_npub = ${memberNpub}
+     AND pg.private_member_npub = ${effectiveNpub}
     LEFT JOIN v4_groups g
       ON g.owner_npub = w.workspace_owner_npub
     LEFT JOIN v4_group_members gm
       ON gm.group_id = g.id
-    WHERE w.creator_npub = ${memberNpub}
-       OR gm.member_npub = ${memberNpub}
+    WHERE w.creator_npub = ${effectiveNpub}
+       OR gm.member_npub = ${effectiveNpub}
     ORDER BY w.updated_at DESC, w.created_at DESC
   `;
 

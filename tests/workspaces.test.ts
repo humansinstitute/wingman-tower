@@ -93,6 +93,8 @@ function authHeader(path: string, method: string, secret: Uint8Array, body?: unk
 }
 
 describe('Workspaces API', () => {
+  let adminGroupId = '';
+
   test('POST /api/v4/workspaces creates workspace plus default and private groups', async () => {
     const payload = {
       workspace_owner_npub: WORKSPACE_OWNER,
@@ -104,6 +106,11 @@ describe('Workspaces API', () => {
       default_group_name: 'Family Shared',
       default_group_member_keys: [
         { member_npub: OWNER, wrapped_group_nsec: 'wrapped-shared-owner', wrapped_by_npub: OWNER },
+      ],
+      admin_group_npub: 'npub1workspaceadmingroup00000000000000000000000000000000000000',
+      admin_group_name: 'Workspace Admins',
+      admin_group_member_keys: [
+        { member_npub: OWNER, wrapped_group_nsec: 'wrapped-admin-owner', wrapped_by_npub: OWNER },
       ],
       private_group_npub: 'npub1privategroup0000000000000000000000000000000000000000000',
       private_group_name: 'Pete Private',
@@ -127,8 +134,10 @@ describe('Workspaces API', () => {
     expect(body.name).toBe('Winn Family');
     expect(body.avatar_url).toBeNull();
     expect(body.default_group_npub).toBe(payload.default_group_npub);
+    expect(body.admin_group_npub).toBe(payload.admin_group_npub);
     expect(body.private_group_npub).toBe(payload.private_group_npub);
     expect(body.wrapped_workspace_nsec).toBe('wrapped-workspace-secret');
+    adminGroupId = body.admin_group_id;
   });
 
   test('GET /api/v4/workspaces lists owned workspace for creator', async () => {
@@ -143,6 +152,7 @@ describe('Workspaces API', () => {
     expect(body.workspaces).toHaveLength(1);
     expect(body.workspaces[0].workspace_owner_npub).toBe(WORKSPACE_OWNER);
     expect(body.workspaces[0].avatar_url).toBeNull();
+    expect(body.workspaces[0].admin_group_id).toBe(adminGroupId);
     expect(body.workspaces[0].private_group_npub).toBeDefined();
     expect(body.workspaces[0].wrapped_workspace_nsec).toBe('wrapped-workspace-secret');
   });
@@ -184,6 +194,28 @@ describe('Workspaces API', () => {
     });
 
     expect(res.status).toBe(403);
+  });
+
+  test('PATCH /api/v4/workspaces/:workspaceOwnerNpub allows workspace admin members', async () => {
+    await sql`
+      INSERT INTO v4_group_members (group_id, member_npub)
+      VALUES (${adminGroupId}, ${MEMBER})
+      ON CONFLICT (group_id, member_npub) DO NOTHING
+    `;
+
+    const payload = { description: 'Admin-updated workspace' };
+    const res = await app.request(`/api/v4/workspaces/${encodeURIComponent(WORKSPACE_OWNER)}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: authHeader(`/api/v4/workspaces/${encodeURIComponent(WORKSPACE_OWNER)}`, 'PATCH', memberSecret, payload),
+      },
+      body: JSON.stringify(payload),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.description).toBe(payload.description);
   });
 
   test('GET /api/v4/workspaces rejects mismatched auth', async () => {

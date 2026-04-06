@@ -34,6 +34,7 @@ export async function ensureRuntimeSchema() {
       wrapped_workspace_nsec TEXT NOT NULL,
       wrapped_by_npub TEXT NOT NULL,
       default_group_id UUID REFERENCES v4_groups(id) ON DELETE SET NULL,
+      admin_group_id UUID REFERENCES v4_groups(id) ON DELETE SET NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )
@@ -42,6 +43,11 @@ export async function ensureRuntimeSchema() {
   await sql.unsafe(`
     ALTER TABLE v4_workspaces
     ADD COLUMN IF NOT EXISTS avatar_url TEXT
+  `);
+
+  await sql.unsafe(`
+    ALTER TABLE v4_workspaces
+    ADD COLUMN IF NOT EXISTS admin_group_id UUID REFERENCES v4_groups(id) ON DELETE SET NULL
   `);
 
   await sql.unsafe(`
@@ -194,5 +200,37 @@ export async function ensureRuntimeSchema() {
     ), '{}')
     WHERE so.access_group_ids = '{}'
       AND so.access_group_npubs != '{}'
+  `);
+
+  // User profiles table
+  await sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS user_profiles (
+      user_npub        TEXT PRIMARY KEY,
+      display_name     TEXT,
+      avatar_url       TEXT,
+      credit_balance   INTEGER NOT NULL DEFAULT 0,
+      created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  // User workspace keys table
+  await sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS user_workspace_keys (
+      user_npub            TEXT NOT NULL REFERENCES user_profiles(user_npub),
+      workspace_owner_npub TEXT NOT NULL,
+      ws_key_npub          TEXT NOT NULL,
+      ws_key_epoch         INTEGER NOT NULL DEFAULT 1,
+      active               BOOLEAN NOT NULL DEFAULT true,
+      registered_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (workspace_owner_npub, ws_key_npub)
+    )
+  `);
+
+  await sql.unsafe(`
+    CREATE INDEX IF NOT EXISTS idx_uwk_user ON user_workspace_keys(user_npub)
+  `);
+
+  await sql.unsafe(`
+    CREATE INDEX IF NOT EXISTS idx_uwk_wskey ON user_workspace_keys(ws_key_npub)
   `);
 }

@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import { nip19, verifyEvent } from 'nostr-tools';
 import type { Context } from 'hono';
+import { resolveWsKeyNpub } from './services/user-workspace-keys';
 
 const NIP98_KIND = 27235;
 const MAX_EVENT_AGE_SECONDS = 300;
@@ -137,4 +138,34 @@ export async function requireNip98Auth(c: Context): Promise<string | Response> {
     return c.json({ error: 'nip98 auth required' }, 401);
   }
   return npub;
+}
+
+/**
+ * Resolved auth identity. signerNpub is the NIP-98 event signer.
+ * userNpub is the real user identity — same as signerNpub for direct auth,
+ * or the resolved real npub when the signer is a workspace session key.
+ */
+export interface ResolvedAuth {
+  signerNpub: string;
+  userNpub: string;
+}
+
+/**
+ * NIP-98 auth with workspace session key resolution.
+ *
+ * 1. Verify NIP-98 signature → signerNpub
+ * 2. Check: is signerNpub a registered ws_key_npub? → resolve to real userNpub
+ * 3. Otherwise: signerNpub === userNpub (backward compat)
+ */
+export async function requireNip98AuthResolved(c: Context): Promise<ResolvedAuth | Response> {
+  const signerNpub = await verifyNip98Auth(c.req.raw);
+  if (!signerNpub) {
+    return c.json({ error: 'nip98 auth required' }, 401);
+  }
+
+  const resolvedUserNpub = await resolveWsKeyNpub(signerNpub);
+  return {
+    signerNpub,
+    userNpub: resolvedUserNpub ?? signerNpub,
+  };
 }

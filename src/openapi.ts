@@ -475,6 +475,7 @@ export function buildOpenApiDocument(origin: string) {
       { name: 'Records', description: 'Append-only record sync and fetch' },
       { name: 'Storage', description: 'Opaque encrypted object upload and download' },
       { name: 'Admin', description: 'Read-only backend table inspection' },
+      { name: 'User', description: 'User profile and workspace session key management' },
     ],
     components: {
       securitySchemes: {
@@ -908,6 +909,43 @@ export function buildOpenApiDocument(origin: string) {
             },
           },
           required: ['viewer', 'table', 'row_count', 'limit', 'offset', 'columns', 'rows'],
+        },
+        RegisterWorkspaceKeyRequest: {
+          type: 'object',
+          properties: {
+            workspace_owner_npub: { type: 'string', description: 'The workspace identity to register the key for' },
+            ws_key_npub: { type: 'string', description: 'Public key of the workspace session keypair' },
+          },
+          required: ['workspace_owner_npub', 'ws_key_npub'],
+        },
+        RotateWorkspaceKeyRequest: {
+          type: 'object',
+          properties: {
+            workspace_owner_npub: { type: 'string' },
+            new_ws_key_npub: { type: 'string', description: 'Public key of the new workspace session keypair' },
+            old_ws_key_npub: { type: 'string', description: 'Public key of the key being rotated out' },
+          },
+          required: ['workspace_owner_npub', 'new_ws_key_npub', 'old_ws_key_npub'],
+        },
+        WorkspaceKeyEntry: {
+          type: 'object',
+          properties: {
+            workspace_owner_npub: { type: 'string' },
+            ws_key_npub: { type: 'string' },
+            ws_key_epoch: { type: 'integer', minimum: 1 },
+            active: { type: 'boolean' },
+          },
+          required: ['workspace_owner_npub', 'ws_key_npub', 'ws_key_epoch', 'active'],
+        },
+        WorkspaceKeysResponse: {
+          type: 'object',
+          properties: {
+            keys: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/WorkspaceKeyEntry' },
+            },
+          },
+          required: ['keys'],
         },
       },
     },
@@ -1690,6 +1728,126 @@ export function buildOpenApiDocument(origin: string) {
             },
             '403': {
               description: 'owner_npub/auth mismatch',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/ErrorResponse' },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/v4/user/workspace-keys': {
+        post: {
+          tags: ['User'],
+          summary: 'Register a workspace session key',
+          description: 'Register a ws_key_npub to act on behalf of the authenticated user in a workspace. Auth must be signed by the real user npub.',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/RegisterWorkspaceKeyRequest' },
+              },
+            },
+          },
+          responses: {
+            '201': {
+              description: 'Key registered',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/WorkspaceKeyEntry' },
+                },
+              },
+            },
+            '400': {
+              description: 'Missing required fields',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/ErrorResponse' },
+                },
+              },
+            },
+            '403': {
+              description: 'User does not have access to the workspace',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/ErrorResponse' },
+                },
+              },
+            },
+            '409': {
+              description: 'ws_key_npub already registered to a different user',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/ErrorResponse' },
+                },
+              },
+            },
+          },
+        },
+        get: {
+          tags: ['User'],
+          summary: 'List workspace session keys for the authenticated user',
+          responses: {
+            '200': {
+              description: 'Workspace keys list',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/WorkspaceKeysResponse' },
+                },
+              },
+            },
+            '401': {
+              description: 'NIP-98 auth required',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/ErrorResponse' },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/v4/user/workspace-keys/rotate': {
+        post: {
+          tags: ['User'],
+          summary: 'Rotate a workspace session key',
+          description: 'Deactivate an old workspace key and register a new one. Auth must be signed by the real user npub.',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/RotateWorkspaceKeyRequest' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Key rotated',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/WorkspaceKeyEntry' },
+                },
+              },
+            },
+            '400': {
+              description: 'Missing required fields',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/ErrorResponse' },
+                },
+              },
+            },
+            '404': {
+              description: 'Old key not found for this user and workspace',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/ErrorResponse' },
+                },
+              },
+            },
+            '409': {
+              description: 'New key already registered to a different user',
               content: {
                 'application/json': {
                   schema: { $ref: '#/components/schemas/ErrorResponse' },

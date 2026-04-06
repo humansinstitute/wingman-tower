@@ -1,10 +1,15 @@
 import { Hono } from 'hono';
 import { createGroup, addGroupMember, rotateGroupEpoch, removeGroupMember, getGroupById, getCurrentGroupEpoch, listGroupsForNpub, deleteGroup, updateGroupName, getWrappedKeysForMember } from '../services/groups';
 import { canManageWorkspace } from '../services/workspaces';
-import { requireNip98Auth } from '../auth';
+import { requireNip98AuthResolved } from '../auth';
+import { sseHub } from '../sse-hub';
 import type { CreateGroupInput, AddMemberInput, RotateGroupEpochInput, UpdateGroupInput } from '../types';
 
 export const groupsRouter = new Hono();
+
+function isProtectedSystemGroupKind(groupKind: string | null | undefined): boolean {
+  return ['workspace_shared', 'workspace_admin', 'private'].includes(String(groupKind || '').trim());
+}
 
 function hasDuplicateMembers(memberNpubs: string[]): boolean {
   return new Set(memberNpubs).size !== memberNpubs.length;
@@ -12,8 +17,9 @@ function hasDuplicateMembers(memberNpubs: string[]): boolean {
 
 // POST /api/v4/groups
 groupsRouter.post('/', async (c) => {
-  const authNpub = await requireNip98Auth(c);
-  if (authNpub instanceof Response) return authNpub;
+  const auth = await requireNip98AuthResolved(c);
+  if (auth instanceof Response) return auth;
+  const { userNpub } = auth;
 
   const body = await c.req.json<CreateGroupInput>();
 
@@ -23,10 +29,13 @@ groupsRouter.post('/', async (c) => {
   if (!body.group_npub) {
     return c.json({ error: 'group_npub required' }, 400);
   }
+  if (body.group_kind && body.group_kind !== 'shared') {
+    return c.json({ error: 'group_kind is reserved for system-managed groups' }, 400);
+  }
   if (!body.member_keys || !Array.isArray(body.member_keys) || body.member_keys.length === 0) {
     return c.json({ error: 'member_keys array required and must not be empty' }, 400);
   }
-  if (!(await canManageWorkspace(body.owner_npub, authNpub))) {
+  if (!(await canManageWorkspace(body.owner_npub, userNpub))) {
     return c.json({ error: 'owner_npub must match authenticated npub or a managed workspace' }, 403);
   }
 
@@ -42,14 +51,14 @@ groupsRouter.post('/', async (c) => {
 
   // For personal groups the owner key must be present. For managed workspaces,
   // the authenticated manager creating the group must have a wrapped key.
-  const requiredKeyHolder = body.owner_npub === authNpub ? body.owner_npub : authNpub;
+  const requiredKeyHolder = body.owner_npub === userNpub ? body.owner_npub : userNpub;
   const requiredHolderHasKey = body.member_keys.some((mk) => mk.member_npub === requiredKeyHolder);
   if (!requiredHolderHasKey) {
     return c.json({ error: 'group creator must have a wrapped key in member_keys' }, 400);
   }
 
   try {
-    const { group, members } = await createGroup(body, authNpub);
+    const { group, members } = await createGroup(body, userNpub);
     return c.json({
       group_id: group.id,
       group_npub: group.group_npub,
@@ -71,8 +80,9 @@ groupsRouter.post('/', async (c) => {
 
 // POST /api/v4/groups/:groupId/rotate
 groupsRouter.post('/:groupId/rotate', async (c) => {
-  const authNpub = await requireNip98Auth(c);
-  if (authNpub instanceof Response) return authNpub;
+  const auth = await requireNip98AuthResolved(c);
+  if (auth instanceof Response) return auth;
+  const { userNpub } = auth;
 
   const groupId = c.req.param('groupId');
   const body = await c.req.json<RotateGroupEpochInput>();
@@ -97,11 +107,15 @@ groupsRouter.post('/:groupId/rotate', async (c) => {
     if (!group) {
       return c.json({ error: 'Group not found' }, 404);
     }
-    if (!(await canManageWorkspace(group.owner_npub, authNpub))) {
+    if (!(await canManageWorkspace(group.owner_npub, userNpub))) {
       return c.json({ error: 'Only the group owner can rotate groups' }, 403);
     }
 
-    const result = await rotateGroupEpoch(groupId, body, authNpub);
+    const result = await rotateGroupEpoch(groupId, body, userNpub);
+    sseHub.emit(result.group.owner_npub, {
+      event: 'group-changed',
+      data: { group_id: groupId, group_npub: result.group.group_npub, action: 'epoch_rotated' },
+    });
     return c.json({
       group_id: result.group.id,
       group_npub: result.group.group_npub,
@@ -123,8 +137,9 @@ groupsRouter.post('/:groupId/rotate', async (c) => {
 
 // POST /api/v4/groups/:groupId/members
 groupsRouter.post('/:groupId/members', async (c) => {
-  const authNpub = await requireNip98Auth(c);
-  if (authNpub instanceof Response) return authNpub;
+  const auth = await requireNip98AuthResolved(c);
+  if (auth instanceof Response) return auth;
+  const { userNpub } = auth;
 
   const groupId = c.req.param('groupId');
   const body = await c.req.json<AddMemberInput>();
@@ -138,11 +153,15 @@ groupsRouter.post('/:groupId/members', async (c) => {
     if (!group) {
       return c.json({ error: 'Group not found' }, 404);
     }
-    if (!(await canManageWorkspace(group.owner_npub, authNpub))) {
+    if (!(await canManageWorkspace(group.owner_npub, userNpub))) {
       return c.json({ error: 'Only the group owner can add members' }, 403);
     }
 
-    const { member, key } = await addGroupMember(groupId, body, authNpub);
+    const { member, key } = await addGroupMember(groupId, body, userNpub);
+    sseHub.emit(group.owner_npub, {
+      event: 'group-changed',
+      data: { group_id: groupId, group_npub: group.group_npub, action: 'member_added' },
+    });
     return c.json({
       id: member.id,
       group_id: member.group_id,
@@ -163,8 +182,9 @@ groupsRouter.post('/:groupId/members', async (c) => {
 
 // DELETE /api/v4/groups/:groupId/members/:memberNpub
 groupsRouter.delete('/:groupId/members/:memberNpub', async (c) => {
-  const authNpub = await requireNip98Auth(c);
-  if (authNpub instanceof Response) return authNpub;
+  const auth = await requireNip98AuthResolved(c);
+  if (auth instanceof Response) return auth;
+  const { userNpub } = auth;
 
   const groupId = c.req.param('groupId');
   const memberNpub = c.req.param('memberNpub');
@@ -174,7 +194,7 @@ groupsRouter.delete('/:groupId/members/:memberNpub', async (c) => {
     if (!group) {
       return c.json({ error: 'Group not found' }, 404);
     }
-    if (!(await canManageWorkspace(group.owner_npub, authNpub))) {
+    if (!(await canManageWorkspace(group.owner_npub, userNpub))) {
       return c.json({ error: 'Only the group owner can remove members' }, 403);
     }
 
@@ -183,6 +203,10 @@ groupsRouter.delete('/:groupId/members/:memberNpub', async (c) => {
       return c.json({ error: 'Member not found' }, 404);
     }
 
+    sseHub.emit(group.owner_npub, {
+      event: 'group-changed',
+      data: { group_id: groupId, group_npub: group.group_npub, action: 'member_removed' },
+    });
     return c.json({ ok: true, group_id: groupId, member_npub: memberNpub });
   } catch (error) {
     return c.json({ error: error instanceof Error ? error.message : 'Failed to remove member' }, 500);
@@ -191,19 +215,22 @@ groupsRouter.delete('/:groupId/members/:memberNpub', async (c) => {
 
 // GET /api/v4/groups/keys?member_npub=<npub>
 groupsRouter.get('/keys', async (c) => {
-  const authNpub = await requireNip98Auth(c);
-  if (authNpub instanceof Response) return authNpub;
+  const auth = await requireNip98AuthResolved(c);
+  if (auth instanceof Response) return auth;
+  const { signerNpub, userNpub } = auth;
 
   const memberNpub = c.req.query('member_npub');
   if (!memberNpub) {
     return c.json({ error: 'member_npub query param required' }, 400);
   }
-  if (memberNpub !== authNpub) {
+  // Accept member_npub matching either the signer or resolved user identity
+  if (memberNpub !== signerNpub && memberNpub !== userNpub) {
     return c.json({ error: 'member_npub must match authenticated npub' }, 403);
   }
 
   try {
-    const keys = await getWrappedKeysForMember(memberNpub);
+    // Group membership is stored by real user npub
+    const keys = await getWrappedKeysForMember(userNpub);
     return c.json({ keys });
   } catch (error) {
     return c.json({ error: error instanceof Error ? error.message : 'Failed to fetch keys' }, 500);
@@ -212,19 +239,22 @@ groupsRouter.get('/keys', async (c) => {
 
 // GET /api/v4/groups?npub=<npub>
 groupsRouter.get('/', async (c) => {
-  const authNpub = await requireNip98Auth(c);
-  if (authNpub instanceof Response) return authNpub;
+  const auth = await requireNip98AuthResolved(c);
+  if (auth instanceof Response) return auth;
+  const { signerNpub, userNpub } = auth;
 
   const npub = c.req.query('npub') || c.req.query('owner_npub');
   if (!npub) {
     return c.json({ error: 'npub query param required' }, 400);
   }
-  if (npub !== authNpub) {
+  // Accept npub matching either the signer or resolved user identity
+  if (npub !== signerNpub && npub !== userNpub) {
     return c.json({ error: 'npub must match authenticated npub' }, 403);
   }
 
   try {
-    const groups = await listGroupsForNpub(npub);
+    // Query by real user npub for group ownership/membership lookups
+    const groups = await listGroupsForNpub(userNpub);
     return c.json({ groups });
   } catch (error) {
     return c.json({ error: error instanceof Error ? error.message : 'Failed to list groups' }, 500);
@@ -233,8 +263,9 @@ groupsRouter.get('/', async (c) => {
 
 // DELETE /api/v4/groups/:groupId
 groupsRouter.delete('/:groupId', async (c) => {
-  const authNpub = await requireNip98Auth(c);
-  if (authNpub instanceof Response) return authNpub;
+  const auth = await requireNip98AuthResolved(c);
+  if (auth instanceof Response) return auth;
+  const { userNpub } = auth;
 
   const groupId = c.req.param('groupId');
 
@@ -243,7 +274,10 @@ groupsRouter.delete('/:groupId', async (c) => {
     if (!group) {
       return c.json({ error: 'Group not found' }, 404);
     }
-    if (!(await canManageWorkspace(group.owner_npub, authNpub))) {
+    if (isProtectedSystemGroupKind(group.group_kind)) {
+      return c.json({ error: 'Protected system groups cannot be deleted' }, 403);
+    }
+    if (!(await canManageWorkspace(group.owner_npub, userNpub))) {
       return c.json({ error: 'Only the group owner can delete groups' }, 403);
     }
 
@@ -256,8 +290,9 @@ groupsRouter.delete('/:groupId', async (c) => {
 
 // PATCH /api/v4/groups/:groupId
 groupsRouter.patch('/:groupId', async (c) => {
-  const authNpub = await requireNip98Auth(c);
-  if (authNpub instanceof Response) return authNpub;
+  const auth = await requireNip98AuthResolved(c);
+  if (auth instanceof Response) return auth;
+  const { userNpub } = auth;
 
   const groupId = c.req.param('groupId');
   const body = await c.req.json<UpdateGroupInput>();
@@ -272,7 +307,10 @@ groupsRouter.patch('/:groupId', async (c) => {
     if (!group) {
       return c.json({ error: 'Group not found' }, 404);
     }
-    if (!(await canManageWorkspace(group.owner_npub, authNpub))) {
+    if (isProtectedSystemGroupKind(group.group_kind)) {
+      return c.json({ error: 'Protected system groups cannot be renamed' }, 403);
+    }
+    if (!(await canManageWorkspace(group.owner_npub, userNpub))) {
       return c.json({ error: 'Only the group owner can rename groups' }, 403);
     }
 

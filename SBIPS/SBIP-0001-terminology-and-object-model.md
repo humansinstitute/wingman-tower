@@ -24,6 +24,7 @@ A `workspace` is the top-level authority and ownership domain for shared data.
 A workspace has:
 
 - a stable `workspace_owner_npub`
+- optionally a synonymous `workspace_npub`
 - a `creator_npub`
 - metadata such as `name`, `description`, and `avatar_url`
 - a wrapped workspace secret `wrapped_workspace_nsec`
@@ -33,9 +34,21 @@ The `workspace_owner_npub` is the canonical owner identity for shared data in
 that workspace. It is not required to equal the actor who bootstrapped the
 workspace.
 
+Implementations MAY also expose `workspace_npub` as a clearer alias for the same
+value. When both fields are present, `workspace_npub` and
+`workspace_owner_npub` MUST be equal.
+
 The `creator_npub` is the actor that created the workspace record on the server.
 In the current Tower implementation, this actor is also the principal manager
 for workspace-level administrative actions.
+
+The current protocol treats workspace identity and service identity as separate
+axes:
+
+- `workspace_owner_npub` identifies the workspace authority domain
+- `service_npub` identifies the HTTPS service currently hosting that workspace
+
+Clients MUST NOT treat a URL by itself as a durable workspace identity.
 
 ### Group
 

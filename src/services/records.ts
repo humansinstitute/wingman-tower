@@ -14,6 +14,11 @@ import type {
   RecordResponse,
 } from '../types';
 
+/**
+ * Resolve the write-group reference on a sync record to a canonical group identity.
+ * Prefers write_group_id (stable UUID) over write_group_npub (rotating crypto identity).
+ * Returns the group's stable group_id, current group_npub, and epoch — or null if unresolvable.
+ */
 async function resolveWriteGroup(sql: ReturnType<typeof getDb>, rec: SyncRecordInput) {
   const writeGroupId = String(rec.write_group_id || '').trim();
   if (writeGroupId) {
@@ -44,6 +49,13 @@ async function resolveWriteGroup(sql: ReturnType<typeof getDb>, rec: SyncRecordI
   return row ?? null;
 }
 
+/**
+ * Resolve a group_payload entry to its canonical group identity.
+ * resolvePayloadGroup treats group_id as the stable UUID and group_npub as the rotating crypto identity.
+ * It maps the client-supplied group_id (stable UUID) or group_npub (rotating crypto identity)
+ * to the matching epoch record in v4_group_epochs.
+ * Falls back to the raw input values when no epoch row is found.
+ */
 async function resolvePayloadGroup(sql: ReturnType<typeof getDb>, payload: GroupPayloadInput) {
   const groupId = String(payload.group_id || '').trim();
   if (groupId) {
@@ -229,7 +241,8 @@ export async function syncRecords(
       RETURNING *
     `;
 
-    // Insert group payloads
+    // Insert group payloads — per-group encrypted delivery blobs (not shares).
+    // Tower stores these for read/write authorization but never decrypts the ciphertext.
     if (rec.group_payloads && rec.group_payloads.length > 0) {
       for (const gp of rec.group_payloads) {
         const resolvedGroup = await resolvePayloadGroup(sql, gp);
@@ -253,7 +266,8 @@ export async function syncRecords(
       updated++;
     }
 
-    // Emit SSE notification for this record change
+    // Emit advisory SSE notification (metadata only — no encrypted content).
+    // Clients must pull via GET /api/v4/records to get actual data.
     sseHub.emit(rec.owner_npub, {
       event: 'record-changed',
       data: {
@@ -397,7 +411,7 @@ export async function fetchRecords(
     `;
   }
 
-  // Batch-fetch group payloads for all rows in a single query
+  // Batch-fetch group payloads (encrypted delivery blobs, one per group per version).
   const results: RecordResponse[] = [];
   if (rows.length > 0) {
     const rowIds = rows.map((r) => r.id);
@@ -405,7 +419,7 @@ export async function fetchRecords(
       SELECT * FROM v4_record_group_payloads WHERE record_row_id IN ${sql(rowIds)}
     `;
 
-    // Group payloads by record_row_id
+    // Index group payloads by record_row_id for efficient assembly.
     const payloadsByRowId = new Map<string, V4RecordGroupPayload[]>();
     for (const p of allPayloads) {
       const existing = payloadsByRowId.get(p.record_row_id);

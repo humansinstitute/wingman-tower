@@ -1,5 +1,6 @@
 import { getDb } from '../db';
 import { config } from '../config';
+import { resolveWsKeyNpub } from './user-workspace-keys';
 import type { CompleteStorageInput, PrepareStorageInput, V4StorageObject } from '../types';
 
 function createS3Client(endpoint: string) {
@@ -167,8 +168,11 @@ export async function canAccessStorageObject(objectId: string, authNpub: string 
   // All remaining checks require authentication
   if (!authNpub) return null;
 
+  // Resolve created_by_npub in case the object was created with a ws_key
+  const creatorRealNpub = await resolveWsKeyNpub(row.created_by_npub) ?? row.created_by_npub;
+
   // Owner or uploader can always read
-  if (row.owner_npub === authNpub || row.created_by_npub === authNpub) return row;
+  if (row.owner_npub === authNpub || creatorRealNpub === authNpub) return row;
 
   // Check if authNpub is the workspace creator (workspace owner can always read)
   const [workspace] = await sql<{ creator_npub: string }[]>`
@@ -199,7 +203,11 @@ export async function canAccessStorageObject(objectId: string, authNpub: string 
 export async function completeStorageObject(objectId: string, input: CompleteStorageInput, authNpub: string): Promise<V4StorageObject | null> {
   const sql = getDb();
   const existing = await getStorageObject(objectId);
-  if (!existing || existing.created_by_npub !== authNpub) return null;
+  if (!existing) return null;
+
+  // Resolve created_by_npub in case the object was created with a ws_key
+  const creatorRealNpub = await resolveWsKeyNpub(existing.created_by_npub) ?? existing.created_by_npub;
+  if (creatorRealNpub !== authNpub) return null;
 
   try {
     await storageBucket.stat(existing.storage_path);
@@ -207,6 +215,7 @@ export async function completeStorageObject(objectId: string, input: CompleteSto
     return null;
   }
 
+  // Use the original created_by_npub for the WHERE clause (matches what's in the DB)
   const [row] = await sql<V4StorageObject[]>`
     UPDATE v4_storage_objects
     SET
@@ -214,7 +223,7 @@ export async function completeStorageObject(objectId: string, input: CompleteSto
       size_bytes = COALESCE(${Number.isFinite(Number(input.size_bytes)) ? Number(input.size_bytes) : null}, size_bytes),
       completed_at = NOW()
     WHERE id = ${objectId}
-      AND created_by_npub = ${authNpub}
+      AND created_by_npub = ${existing.created_by_npub}
     RETURNING *
   `;
   return row || null;
@@ -222,7 +231,12 @@ export async function completeStorageObject(objectId: string, input: CompleteSto
 
 export async function writeStorageObject(objectId: string, bytes: Uint8Array, authNpub: string): Promise<V4StorageObject | null> {
   const row = await getStorageObject(objectId);
-  if (!row || row.created_by_npub !== authNpub) return null;
+  if (!row) return null;
+
+  // Resolve created_by_npub in case the object was created with a ws_key
+  const creatorRealNpub = await resolveWsKeyNpub(row.created_by_npub) ?? row.created_by_npub;
+  if (creatorRealNpub !== authNpub) return null;
+
   await storageBucket.write(row.storage_path, bytes, { type: row.content_type || 'application/octet-stream' });
   return row;
 }

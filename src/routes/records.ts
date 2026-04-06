@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { syncRecords, fetchRecords, fetchRecordsSummary, fetchRecordHistory, heartbeatCheck } from '../services/records';
 import { getCurrentGroupEpoch, getGroupByCurrentNpub } from '../services/groups';
-import { requireNip98Auth, verifyNip98AuthHeader } from '../auth';
+import { requireNip98AuthResolved, verifyNip98AuthHeader } from '../auth';
 import type { FetchRecordsInput, FetchRecordsSummaryInput, HeartbeatRequestBody, SyncRequestBody } from '../types';
 
 export const recordsRouter = new Hono();
@@ -19,8 +19,9 @@ function buildGroupWriteProofHash(body: SyncRequestBody) {
 
 // POST /api/v4/records/sync
 recordsRouter.post('/sync', async (c) => {
-  const authNpub = await requireNip98Auth(c);
-  if (authNpub instanceof Response) return authNpub;
+  const auth = await requireNip98AuthResolved(c);
+  if (auth instanceof Response) return auth;
+  const { signerNpub, userNpub } = auth;
 
   const rawBody = await c.req.raw.clone().text();
   const body = await c.req.json<SyncRequestBody>();
@@ -64,7 +65,7 @@ recordsRouter.post('/sync', async (c) => {
       }
     }
 
-    const result = await syncRecords(body.owner_npub, body.records, authNpub, authorizedWriteGroups);
+    const result = await syncRecords(body.owner_npub, body.records, signerNpub, userNpub, authorizedWriteGroups);
     return c.json(result);
   } catch (error) {
     return c.json({ error: error instanceof Error ? error.message : 'Failed to sync records' }, 500);
@@ -73,21 +74,23 @@ recordsRouter.post('/sync', async (c) => {
 
 // POST /api/v4/records/heartbeat
 recordsRouter.post('/heartbeat', async (c) => {
-  const authNpub = await requireNip98Auth(c);
-  if (authNpub instanceof Response) return authNpub;
+  const auth = await requireNip98AuthResolved(c);
+  if (auth instanceof Response) return auth;
+  const { signerNpub, userNpub } = auth;
 
   const body = await c.req.json<HeartbeatRequestBody>();
   if (!body.owner_npub) {
     return c.json({ error: 'owner_npub required' }, 400);
   }
-  if (body.viewer_npub && body.viewer_npub !== authNpub) {
+  // Accept viewer_npub matching either the signer or resolved user identity
+  if (body.viewer_npub && body.viewer_npub !== signerNpub && body.viewer_npub !== userNpub) {
     return c.json({ error: 'viewer_npub must match authenticated npub' }, 403);
   }
 
   try {
     const result = await heartbeatCheck(
       body.owner_npub,
-      body.viewer_npub || body.owner_npub,
+      body.viewer_npub || userNpub,
       body.family_cursors || {},
     );
     return c.json(result);
@@ -98,8 +101,9 @@ recordsRouter.post('/heartbeat', async (c) => {
 
 // GET /api/v4/records/:record_id/history?owner_npub=<npub>&viewer_npub=<npub>
 recordsRouter.get('/:record_id/history', async (c) => {
-  const authNpub = await requireNip98Auth(c);
-  if (authNpub instanceof Response) return authNpub;
+  const auth = await requireNip98AuthResolved(c);
+  if (auth instanceof Response) return auth;
+  const { signerNpub, userNpub } = auth;
 
   const recordId = c.req.param('record_id');
   const ownerNpub = c.req.query('owner_npub');
@@ -108,12 +112,12 @@ recordsRouter.get('/:record_id/history', async (c) => {
   if (!ownerNpub) {
     return c.json({ error: 'owner_npub query param required' }, 400);
   }
-  if (viewerNpub && viewerNpub !== authNpub) {
+  if (viewerNpub && viewerNpub !== signerNpub && viewerNpub !== userNpub) {
     return c.json({ error: 'viewer_npub must match authenticated npub' }, 403);
   }
 
   try {
-    const versions = await fetchRecordHistory(recordId, ownerNpub, viewerNpub || authNpub);
+    const versions = await fetchRecordHistory(recordId, ownerNpub, viewerNpub || userNpub);
     return c.json({ versions });
   } catch (error) {
     return c.json({ error: error instanceof Error ? error.message : 'Failed to fetch record history' }, 500);
@@ -122,8 +126,9 @@ recordsRouter.get('/:record_id/history', async (c) => {
 
 // GET /api/v4/records/summary?owner_npub=<npub>&record_family_hash=<hash>&since=<iso>
 recordsRouter.get('/summary', async (c) => {
-  const authNpub = await requireNip98Auth(c);
-  if (authNpub instanceof Response) return authNpub;
+  const auth = await requireNip98AuthResolved(c);
+  if (auth instanceof Response) return auth;
+  const { signerNpub, userNpub } = auth;
 
   const ownerNpub = c.req.query('owner_npub');
   const viewerNpub = c.req.query('viewer_npub');
@@ -133,14 +138,14 @@ recordsRouter.get('/summary', async (c) => {
   if (!ownerNpub) {
     return c.json({ error: 'owner_npub query param required' }, 400);
   }
-  if (viewerNpub && viewerNpub !== authNpub) {
+  if (viewerNpub && viewerNpub !== signerNpub && viewerNpub !== userNpub) {
     return c.json({ error: 'viewer_npub must match authenticated npub' }, 403);
   }
 
   try {
     const families = await fetchRecordsSummary({
       owner_npub: ownerNpub,
-      viewer_npub: authNpub,
+      viewer_npub: userNpub,
       record_family_hash: recordFamilyHash || undefined,
       since: since || undefined,
     } satisfies FetchRecordsSummaryInput);
@@ -152,8 +157,9 @@ recordsRouter.get('/summary', async (c) => {
 
 // GET /api/v4/records?owner_npub=<npub>&record_family_hash=<hash>&since=<iso>
 recordsRouter.get('/', async (c) => {
-  const authNpub = await requireNip98Auth(c);
-  if (authNpub instanceof Response) return authNpub;
+  const auth = await requireNip98AuthResolved(c);
+  if (auth instanceof Response) return auth;
+  const { signerNpub, userNpub } = auth;
 
   const ownerNpub = c.req.query('owner_npub');
   const viewerNpub = c.req.query('viewer_npub');
@@ -166,7 +172,7 @@ recordsRouter.get('/', async (c) => {
   if (!recordFamilyHash) {
     return c.json({ error: 'record_family_hash query param required' }, 400);
   }
-  if (viewerNpub && viewerNpub !== authNpub) {
+  if (viewerNpub && viewerNpub !== signerNpub && viewerNpub !== userNpub) {
     return c.json({ error: 'viewer_npub must match authenticated npub' }, 403);
   }
 
@@ -178,7 +184,7 @@ recordsRouter.get('/', async (c) => {
   try {
     const result = await fetchRecords({
       owner_npub: ownerNpub,
-      viewer_npub: authNpub,
+      viewer_npub: userNpub,
       record_family_hash: recordFamilyHash,
       since: since || undefined,
       limit: Number.isFinite(limit) ? limit : undefined,

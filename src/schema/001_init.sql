@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS v4_workspaces (
   wrapped_workspace_nsec TEXT NOT NULL,
   wrapped_by_npub TEXT NOT NULL,
   default_group_id UUID REFERENCES v4_groups(id) ON DELETE SET NULL,
+  admin_group_id UUID REFERENCES v4_groups(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -121,3 +122,26 @@ CREATE TABLE IF NOT EXISTS v4_storage_objects (
 CREATE INDEX IF NOT EXISTS idx_v4_storage_owner ON v4_storage_objects(owner_npub);
 CREATE INDEX IF NOT EXISTS idx_v4_storage_creator ON v4_storage_objects(created_by_npub);
 CREATE INDEX IF NOT EXISTS idx_v4_storage_group ON v4_storage_objects(owner_group_id);
+
+-- User profiles: durable user entity for billing, display, and key registration
+CREATE TABLE IF NOT EXISTS user_profiles (
+  user_npub        TEXT PRIMARY KEY,
+  display_name     TEXT,
+  avatar_url       TEXT,
+  credit_balance   INTEGER NOT NULL DEFAULT 0,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Workspace session keys: maps ws_key_npub to real user identity per workspace
+CREATE TABLE IF NOT EXISTS user_workspace_keys (
+  user_npub            TEXT NOT NULL REFERENCES user_profiles(user_npub),
+  workspace_owner_npub TEXT NOT NULL,
+  ws_key_npub          TEXT NOT NULL,
+  ws_key_epoch         INTEGER NOT NULL DEFAULT 1,
+  active               BOOLEAN NOT NULL DEFAULT true,
+  registered_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (workspace_owner_npub, ws_key_npub)
+);
+
+CREATE INDEX IF NOT EXISTS idx_uwk_user ON user_workspace_keys(user_npub);
+CREATE INDEX IF NOT EXISTS idx_uwk_wskey ON user_workspace_keys(ws_key_npub);

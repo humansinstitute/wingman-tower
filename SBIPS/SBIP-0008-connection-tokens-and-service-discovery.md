@@ -29,7 +29,7 @@ The current token payload uses:
 - `direct_https_url`
 - `workspace_owner_npub`
 - `app_npub`
-- optional `service_npub`
+- `service_npub`
 - optional `relay` or `relays`
 
 ### Required Fields
@@ -41,12 +41,12 @@ The token MUST include:
 - `direct_https_url`
 - `workspace_owner_npub`
 - `app_npub`
+- `service_npub`
 
 ### Optional Fields
 
 The token MAY include:
 
-- `service_npub`
 - `relay`
 - `relays`
 
@@ -57,7 +57,8 @@ If multiple relay URLs are present, it emits `relays`.
 
 ### Semantics
 
-`direct_https_url` is the base HTTPS origin clients should use for the API.
+`direct_https_url` is the base HTTPS origin clients should initially use for the
+API. It is a transport locator, not a durable authority identifier.
 
 `workspace_owner_npub` identifies the workspace authority domain the client will
 operate within.
@@ -65,7 +66,16 @@ operate within.
 `app_npub` identifies the application namespace or app authority the client is
 binding to.
 
-`service_npub`, when present, identifies the server's Nostr service identity.
+`service_npub` identifies the server's Nostr service identity.
+
+The durable identity of a workspace connection is the ordered pair:
+
+- `service_npub`
+- `workspace_owner_npub`
+
+Clients MUST use that pair, not URL alone, when caching workspace connections,
+selecting a current workspace, or deciding whether two discovered workspaces are
+the same logical connection.
 
 Relay hints are advisory discovery information. They are not currently required
 for HTTP operation.
@@ -79,6 +89,10 @@ Clients decoding a token SHOULD verify:
 - `direct_https_url` is a usable HTTPS base URL
 - `workspace_owner_npub` is present
 - `app_npub` is present
+- `service_npub` is present
+
+Clients SHOULD resolve the target service and verify that the discovered service
+identity matches the token `service_npub`.
 
 Clients MUST reject or warn on unsupported token versions.
 
@@ -87,7 +101,11 @@ Clients MUST reject or warn on unsupported token versions.
 - The current token format is not signed by itself. It must therefore be
   obtained over a trusted channel or bundled inside a trusted higher-level
   package.
-- Clients SHOULD treat the token as configuration data, not proof of authority.
+- Clients MUST treat `direct_https_url` as untrusted routing input until the
+  hosting service identity is checked against `service_npub`.
+- The token remains configuration data, not cryptographic proof of authority.
+  A future SBIP may define signed service attestation or signed connection
+  packaging for stronger anti-spoof guarantees.
 
 ## Backward Compatibility Notes
 

@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { requireNip98Auth } from '../auth';
+import { requireNip98Auth, requireNip98AuthResolved } from '../auth';
 import { config } from '../config';
 import {
   canManageWorkspace,
@@ -30,8 +30,14 @@ workspacesRouter.post('/', async (c) => {
   if (!body.default_group_npub || !body.private_group_npub) {
     return c.json({ error: 'default_group_npub and private_group_npub required' }, 400);
   }
+  if (!body.admin_group_npub) {
+    return c.json({ error: 'admin_group_npub required' }, 400);
+  }
   if (!Array.isArray(body.default_group_member_keys) || body.default_group_member_keys.length === 0) {
     return c.json({ error: 'default_group_member_keys required' }, 400);
+  }
+  if (!Array.isArray(body.admin_group_member_keys) || body.admin_group_member_keys.length === 0) {
+    return c.json({ error: 'admin_group_member_keys required' }, 400);
   }
   if (!Array.isArray(body.private_group_member_keys) || body.private_group_member_keys.length === 0) {
     return c.json({ error: 'private_group_member_keys required' }, 400);
@@ -39,11 +45,17 @@ workspacesRouter.post('/', async (c) => {
   if (uniqueMembers(body.default_group_member_keys) !== body.default_group_member_keys.length) {
     return c.json({ error: 'default_group_member_keys must contain unique members' }, 400);
   }
+  if (uniqueMembers(body.admin_group_member_keys) !== body.admin_group_member_keys.length) {
+    return c.json({ error: 'admin_group_member_keys must contain unique members' }, 400);
+  }
   if (uniqueMembers(body.private_group_member_keys) !== body.private_group_member_keys.length) {
     return c.json({ error: 'private_group_member_keys must contain unique members' }, 400);
   }
   if (!body.default_group_member_keys.some((entry) => entry.member_npub === authNpub)) {
     return c.json({ error: 'creator must be present in default_group_member_keys' }, 400);
+  }
+  if (!body.admin_group_member_keys.some((entry) => entry.member_npub === authNpub)) {
+    return c.json({ error: 'creator must be present in admin_group_member_keys' }, 400);
   }
   if (!body.private_group_member_keys.some((entry) => entry.member_npub === authNpub)) {
     return c.json({ error: 'creator must be present in private_group_member_keys' }, 400);
@@ -63,6 +75,8 @@ workspacesRouter.post('/', async (c) => {
       service_npub: config.service.npub || null,
       default_group_id: result.defaultGroup.id,
       default_group_npub: result.defaultGroup.group_npub,
+      admin_group_id: result.adminGroup.id,
+      admin_group_npub: result.adminGroup.group_npub,
       private_group_id: result.privateGroup.id,
       private_group_npub: result.privateGroup.group_npub,
       wrapped_workspace_nsec: result.workspace.wrapped_workspace_nsec,
@@ -79,19 +93,22 @@ workspacesRouter.post('/', async (c) => {
 });
 
 workspacesRouter.get('/', async (c) => {
-  const authNpub = await requireNip98Auth(c);
-  if (authNpub instanceof Response) return authNpub;
+  const auth = await requireNip98AuthResolved(c);
+  if (auth instanceof Response) return auth;
+  const { signerNpub, userNpub } = auth;
 
   const memberNpub = c.req.query('member_npub') || c.req.query('npub');
   if (!memberNpub) {
     return c.json({ error: 'member_npub query param required' }, 400);
   }
-  if (memberNpub !== authNpub) {
+  // Accept member_npub matching either the signer or resolved user identity
+  if (memberNpub !== signerNpub && memberNpub !== userNpub) {
     return c.json({ error: 'member_npub must match authenticated npub' }, 403);
   }
 
   try {
-    const workspaces = await listWorkspacesForMember(memberNpub);
+    // Always query by the real user npub for group membership lookups
+    const workspaces = await listWorkspacesForMember(userNpub);
     return c.json({
       workspaces: workspaces.map((workspace) => ({
         ...workspace,
@@ -161,15 +178,17 @@ workspacesRouter.post('/recover', async (c) => {
 });
 
 workspacesRouter.patch('/:workspaceOwnerNpub', async (c) => {
-  const authNpub = await requireNip98Auth(c);
-  if (authNpub instanceof Response) return authNpub;
+  const auth = await requireNip98AuthResolved(c);
+  if (auth instanceof Response) return auth;
+  const { userNpub } = auth;
 
   const workspaceOwnerNpub = String(c.req.param('workspaceOwnerNpub') || '').trim();
   if (!workspaceOwnerNpub) {
     return c.json({ error: 'workspaceOwnerNpub path param required' }, 400);
   }
 
-  if (!(await canManageWorkspace(workspaceOwnerNpub, authNpub))) {
+  // canManageWorkspace already resolves ws_key internally
+  if (!(await canManageWorkspace(workspaceOwnerNpub, userNpub))) {
     return c.json({ error: 'Not authorized to manage this workspace' }, 403);
   }
 
@@ -201,7 +220,7 @@ workspacesRouter.patch('/:workspaceOwnerNpub', async (c) => {
       return c.json({ error: 'Workspace not found' }, 404);
     }
 
-    const workspaces = await listWorkspacesForMember(authNpub);
+    const workspaces = await listWorkspacesForMember(userNpub);
     const workspace = workspaces.find((entry) => entry.workspace_owner_npub === workspaceOwnerNpub);
     if (!workspace) {
       return c.json({ error: 'Workspace not visible to actor after update' }, 404);

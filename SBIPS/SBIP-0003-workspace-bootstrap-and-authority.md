@@ -61,6 +61,7 @@ The current protocol distinguishes:
 
 - `workspace_owner_npub`: the stable workspace owner identity
 - `creator_npub`: the actor that created the workspace on the server
+- `service_npub`: the service identity of the hosting HTTPS server
 
 A server implementing the current Tower semantics MUST consider a principal
 authorized to manage the workspace if:
@@ -69,6 +70,10 @@ authorized to manage the workspace if:
 - the principal equals `creator_npub`
 
 This is the current `canManageWorkspace` rule.
+
+`service_npub` does not grant management authority by itself. It identifies the
+service context in which the workspace is being served and is primarily used by
+clients for trusted connection bootstrap and workspace disambiguation.
 
 ### Workspace Listing
 
@@ -127,6 +132,10 @@ An empty name MUST be rejected.
   to be permanent or transitional.
 - Recovery is powerful and MUST require authenticated membership evidence.
 - Wrapped workspace secrets MUST be treated as encrypted confidential material.
+- Clients SHOULD bind a recovered or listed workspace to the hosting
+  `service_npub` when that identity is available.
+- Clients MUST NOT use `direct_https_url` alone as proof that two workspace
+  connections refer to the same hosting service.
 
 ## Backward Compatibility Notes
 
